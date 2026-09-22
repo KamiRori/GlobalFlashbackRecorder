@@ -16,8 +16,8 @@ public record CaptureOptions(
         boolean includeNonPlayerEntities,
         boolean encodeChunkPayloads
 ) {
-    /** Default radius 5 (~11×11); was 8 (~17×17) and dominated MSPT via fingerprint. */
-    public static final CaptureOptions DEFAULT = new CaptureOptions(5, true, true);
+    /** Default radius 8 (~17×17 already-loaded chunks around each player). */
+    public static final CaptureOptions DEFAULT = new CaptureOptions(8, true, true);
 
     public CaptureOptions(int chunkRadiusAroundPlayers, boolean includeNonPlayerEntities) {
         this(chunkRadiusAroundPlayers, includeNonPlayerEntities, true);

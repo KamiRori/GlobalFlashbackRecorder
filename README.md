@@ -92,7 +92,7 @@ Paper **26.2** 服务端全局 Replay 插件：在服务器上录制一场 Event
 | `/gfr record stop` | 停止并编码（**须由游戏内玩家执行**，该玩家作为相机 ego） |
 | `/gfr poc` / `/gfr capture` | 开发 / 调试用子命令 |
 
-默认：`keyframeIntervalTicks = 100`，`chunkRadius = 5`（仅跟踪玩家附近**已加载** Chunk）。
+默认：`keyframeIntervalTicks = 100`，`chunkRadius = 8`（仅跟踪玩家附近**已加载** Chunk）。
 
 停止后会在插件数据目录写出 Flashback `.zip`，控制台 / 消息中会打印路径。
 
