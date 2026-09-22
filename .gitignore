@@ -1,0 +1,16 @@
+.gradle/
+build/
+out/
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+run/
+logs/
+*.log
+.DS_Store
+_investigate/
+*.flashback
+**/poc/*.zip
+!docs/**

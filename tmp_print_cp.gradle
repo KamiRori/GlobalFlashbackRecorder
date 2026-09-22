@@ -1,0 +1,5 @@
+﻿tasks.register("printCompileCp") {
+  doLast {
+    configurations.compileClasspath.files.filter { it.name.contains("paper") || it.name.contains("spigot") || it.name.contains("bukkit") }.forEach { println(it.absolutePath) }
+  }
+}

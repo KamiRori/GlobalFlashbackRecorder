@@ -1,0 +1,15 @@
+name: GlobalFlashbackRecorder
+version: '${version}'
+main: com.globalflashback.GlobalFlashbackPlugin
+api-version: '26.2'
+authors: [GlobalFlashback]
+description: Global Flashback Recorder — Flashback Encoder
+commands:
+  gfr:
+    description: Global Flashback Recorder commands
+    usage: /gfr <poc|capture|record> ...
+    permission: globalflashback.admin
+permissions:
+  globalflashback.admin:
+    description: Run Global Flashback Recorder admin commands
+    default: op
