@@ -3,7 +3,8 @@ package com.globalflashback;
 import com.globalflashback.capture.ServerStateCapture;
 import com.globalflashback.command.GfrCommand;
 import com.globalflashback.nms.NmsAdapter;
-import com.globalflashback.nms.v26_2.NmsAdapter26_2;
+import com.globalflashback.nms.NmsPlatform;
+import com.globalflashback.nms.NmsPlatforms;
 import com.globalflashback.poc.PocReplayExporter;
 import com.globalflashback.recorder.GlobalReplayRecorder;
 import org.bukkit.command.PluginCommand;
@@ -16,10 +17,11 @@ public final class GlobalFlashbackPlugin extends JavaPlugin {
     public void onEnable() {
         saveDefaultConfig();
 
-        NmsAdapter nmsAdapter = new NmsAdapter26_2();
+        NmsPlatform platform = NmsPlatforms.create();
+        NmsAdapter nmsAdapter = platform.adapter();
         ServerStateCapture stateCapture = new ServerStateCapture(nmsAdapter);
-        PocReplayExporter pocExporter = new PocReplayExporter(this);
-        recorder = new GlobalReplayRecorder(this, stateCapture, nmsAdapter);
+        PocReplayExporter pocExporter = new PocReplayExporter(this, platform.pocSnapshots());
+        recorder = new GlobalReplayRecorder(this, stateCapture, platform);
 
         GfrCommand command = new GfrCommand(this, pocExporter, stateCapture, nmsAdapter, recorder);
         PluginCommand gfr = getCommand("gfr");
@@ -30,7 +32,7 @@ public final class GlobalFlashbackPlugin extends JavaPlugin {
         }
         gfr.setExecutor(command);
         gfr.setTabCompleter(command);
-        getLogger().info("Ready. /gfr poc | capture | record <start|stop|status>");
+        getLogger().info("Ready (" + platform.line() + "). /gfr poc | capture | record <start|stop|status>");
     }
 
     @Override
@@ -41,6 +43,9 @@ public final class GlobalFlashbackPlugin extends JavaPlugin {
             } catch (Exception e) {
                 getLogger().warning("Failed to stop recording on disable: " + e.getMessage());
             }
+        }
+        if (recorder != null) {
+            recorder.shutdown();
         }
     }
 }

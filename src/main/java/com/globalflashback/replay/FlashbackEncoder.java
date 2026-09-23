@@ -6,14 +6,14 @@ import com.globalflashback.format.ChunkWriter;
 import com.globalflashback.format.FlashbackContainer;
 import com.globalflashback.format.FlashbackMeta;
 import com.globalflashback.format.ReplayAction;
-import com.globalflashback.nms.v26_2.StateActionEncoder26_2;
+import com.globalflashback.nms.StateActionEncoder;
 import com.globalflashback.state.GlobalSnapshot;
-import org.bukkit.entity.Player;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -21,35 +21,34 @@ import java.util.Objects;
 /**
  * Encodes a logical {@link ReplayDocument} into a Flashback-compatible outer {@code .zip}.
  *
- * <p>Linear playback uses a single initial snapshot on {@code c0} plus a tick stream.
- * In-memory recording Keyframes are <em>not</em> written as extra ZIP chunks with
- * {@code forcePlaySnapshot} — that re-applied login/world every keyframe and caused a visible
- * flash to the chunk-start state about once per second.
+ * <p>Uses a {@link StateActionEncoder.Session} prepared on the main thread so {@link #encode}
+ * may run on an async worker (compression + disk IO) without touching live Bukkit entities.
  *
- * <p>Rollover at 6000 ticks uses an empty snapshot and {@code forcePlaySnapshot=false}.
+ * <p>When {@link ReplayDocument#deltaSpill()} is set, deltas are streamed from disk (H11) instead
+ * of loading the full list into a HashMap.
  */
 public final class FlashbackEncoder {
     /** Flashback default max chunk length: 300s × 20 TPS. */
     private static final int MAX_CHUNK_TICKS = 6000;
 
-    private final StateActionEncoder26_2 actionEncoder = new StateActionEncoder26_2();
+    public FlashbackEncoder() {}
 
-    public Path encode(ReplayDocument document, Player camera, Path outputFile) throws IOException {
+    public Path encode(
+            ReplayDocument document,
+            StateActionEncoder.Session session,
+            Path outputFile
+    ) throws IOException {
         Objects.requireNonNull(document, "document");
-        Objects.requireNonNull(camera, "camera");
+        Objects.requireNonNull(session, "session");
         Objects.requireNonNull(outputFile, "outputFile");
 
         ReplayMetadata meta = document.metadata();
         GlobalSnapshot initial = document.initialSnapshot();
         int startTick = initial.tick();
         int endTick = startTick + Math.max(0, meta.totalTicks());
+
         for (DeltaFrame frame : document.deltas()) {
             endTick = Math.max(endTick, frame.tick());
-        }
-
-        Map<Integer, DeltaFrame> deltasByTick = new HashMap<>();
-        for (DeltaFrame frame : document.deltas()) {
-            deltasByTick.put(frame.tick(), frame);
         }
 
         FlashbackMeta flashMeta = new FlashbackMeta();
@@ -61,28 +60,15 @@ public final class FlashbackEncoder {
         flashMeta.protocolVersion = meta.protocolVersion();
         flashMeta.totalTicks = Math.max(0, endTick - startTick);
 
-        List<ReplayAction> initialSnapshotActions = actionEncoder.encodeSnapshot(camera, initial);
+        List<ReplayAction> initialSnapshotActions = session.encodeSnapshot(initial);
 
         try (FlashbackContainer.Writer writer = FlashbackContainer.create(outputFile)) {
-            int chunkIndex = 0;
-            int cursor = startTick;
-            while (cursor < endTick || chunkIndex == 0) {
-                int segmentEnd = Math.min(endTick, cursor + MAX_CHUNK_TICKS);
-                boolean first = chunkIndex == 0;
-                List<ReplayAction> snapshot = first ? initialSnapshotActions : List.of();
-                List<ReplayAction> stream = buildStream(deltasByTick, camera, cursor, segmentEnd);
-                int duration = Math.max(0, segmentEnd - cursor);
-
-                String chunkName = "c" + chunkIndex + ".flashback";
-                writer.writeChunk(chunkName, ChunkWriter.write(snapshot, stream));
-                // Only c0 force-plays snapshot (seek into start). Later chunks continue the stream.
-                flashMeta.chunks.put(chunkName, new ChunkMeta(duration, first));
-                chunkIndex++;
-
-                if (segmentEnd >= endTick) {
-                    break;
-                }
-                cursor = segmentEnd;
+            if (document.deltaSpill() != null) {
+                encodeWithSpill(document, session, writer, flashMeta, initialSnapshotActions,
+                        startTick, endTick);
+            } else {
+                encodeWithMemoryDeltas(document, session, writer, flashMeta, initialSnapshotActions,
+                        startTick, endTick);
             }
 
             if (flashMeta.chunks.isEmpty()) {
@@ -96,12 +82,94 @@ public final class FlashbackEncoder {
         return outputFile;
     }
 
-    /**
-     * Emits deltas + {@code next_tick} for ticks {@code (segmentStart, segmentEnd]}.
-     */
-    private List<ReplayAction> buildStream(
+    private void encodeWithMemoryDeltas(
+            ReplayDocument document,
+            StateActionEncoder.Session session,
+            FlashbackContainer.Writer writer,
+            FlashbackMeta flashMeta,
+            List<ReplayAction> initialSnapshotActions,
+            int startTick,
+            int endTick
+    ) throws IOException {
+        Map<Integer, DeltaFrame> deltasByTick = new HashMap<>();
+        for (DeltaFrame frame : document.deltas()) {
+            deltasByTick.put(frame.tick(), frame);
+            endTick = Math.max(endTick, frame.tick());
+        }
+        flashMeta.totalTicks = Math.max(flashMeta.totalTicks, Math.max(0, endTick - startTick));
+
+        int chunkIndex = 0;
+        int cursor = startTick;
+        while (cursor < endTick || chunkIndex == 0) {
+            int segmentEnd = Math.min(endTick, cursor + MAX_CHUNK_TICKS);
+            boolean first = chunkIndex == 0;
+            List<ReplayAction> snapshot = first ? initialSnapshotActions : List.of();
+            List<ReplayAction> stream = buildStreamFromMap(deltasByTick, session, cursor, segmentEnd);
+            int duration = Math.max(0, segmentEnd - cursor);
+
+            String chunkName = "c" + chunkIndex + ".flashback";
+            writer.writeChunk(chunkName, ChunkWriter.write(snapshot, stream));
+            flashMeta.chunks.put(chunkName, new ChunkMeta(duration, first));
+            chunkIndex++;
+
+            if (segmentEnd >= endTick) {
+                break;
+            }
+            cursor = segmentEnd;
+        }
+    }
+
+    private void encodeWithSpill(
+            ReplayDocument document,
+            StateActionEncoder.Session session,
+            FlashbackContainer.Writer writer,
+            FlashbackMeta flashMeta,
+            List<ReplayAction> initialSnapshotActions,
+            int startTick,
+            int endTick
+    ) throws IOException {
+        // totalTicks already finalized from the recording session timeline.
+        flashMeta.totalTicks = Math.max(0, endTick - startTick);
+
+        try (DeltaSpillFile.Reader reader = DeltaSpillFile.open(document.deltaSpill())) {
+            Iterator<DeltaFrame> it = reader.iterator();
+            DeltaFrame pending = it.hasNext() ? it.next() : null;
+
+            int chunkIndex = 0;
+            int cursor = startTick;
+            while (cursor < endTick || chunkIndex == 0) {
+                int segmentEnd = Math.min(endTick, cursor + MAX_CHUNK_TICKS);
+                boolean first = chunkIndex == 0;
+                List<ReplayAction> snapshot = first ? initialSnapshotActions : List.of();
+                List<ReplayAction> stream = new ArrayList<>();
+                for (int tick = cursor + 1; tick <= segmentEnd; tick++) {
+                    while (pending != null && pending.tick() < tick) {
+                        pending = it.hasNext() ? it.next() : null;
+                    }
+                    if (pending != null && pending.tick() == tick) {
+                        if (!pending.isEmpty()) {
+                            stream.addAll(session.encodeChanges(pending.changes()));
+                        }
+                        pending = it.hasNext() ? it.next() : null;
+                    }
+                    stream.add(ReplayAction.nextTick());
+                }
+                int duration = Math.max(0, segmentEnd - cursor);
+                String chunkName = "c" + chunkIndex + ".flashback";
+                writer.writeChunk(chunkName, ChunkWriter.write(snapshot, stream));
+                flashMeta.chunks.put(chunkName, new ChunkMeta(duration, first));
+                chunkIndex++;
+                if (segmentEnd >= endTick) {
+                    break;
+                }
+                cursor = segmentEnd;
+            }
+        }
+    }
+
+    private List<ReplayAction> buildStreamFromMap(
             Map<Integer, DeltaFrame> deltasByTick,
-            Player camera,
+            StateActionEncoder.Session session,
             int segmentStart,
             int segmentEnd
     ) {
@@ -109,7 +177,7 @@ public final class FlashbackEncoder {
         for (int tick = segmentStart + 1; tick <= segmentEnd; tick++) {
             DeltaFrame frame = deltasByTick.get(tick);
             if (frame != null && !frame.isEmpty()) {
-                streamActions.addAll(actionEncoder.encodeChanges(camera, frame.changes()));
+                streamActions.addAll(session.encodeChanges(frame.changes()));
             }
             streamActions.add(ReplayAction.nextTick());
         }

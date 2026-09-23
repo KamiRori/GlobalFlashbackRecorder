@@ -1,6 +1,7 @@
 package com.globalflashback.state;
 
 import java.util.Objects;
+import java.io.Serializable;
 
 /**
  * Per-dimension world state that is not chunk/entity specific.
@@ -23,7 +24,7 @@ public record WorldState(
         double worldBorderLerpTarget,
         long worldBorderLerpTime,
         int seaLevel
-) {
+) implements Serializable {
     public WorldState {
         Objects.requireNonNull(dimension, "dimension");
     }

@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.io.Serializable;
 
 /**
  * Full recoverable Global Replay state at a single tick (Initial Snapshot or Keyframe body).
@@ -21,7 +22,7 @@ public record GlobalSnapshot(
         Map<ReplayMath.ChunkPosKey, ChunkState> chunks,
         Map<UUID, PlayerState> players,
         Map<Integer, EntityState> entities
-) {
+) implements Serializable {
     public GlobalSnapshot {
         if (tick < 0) {
             throw new IllegalArgumentException("tick must be >= 0");

@@ -2,6 +2,7 @@ package com.globalflashback.state;
 
 import java.util.List;
 import java.util.Objects;
+import java.io.Serializable;
 
 /**
  * Immutable chunk snapshot entry.
@@ -17,7 +18,7 @@ public record ChunkState(
         List<BlockEntityState> blockEntities,
         long contentFingerprint,
         long cheapFingerprint
-) {
+) implements Serializable {
     public ChunkState {
         Objects.requireNonNull(dimension, "dimension");
         Objects.requireNonNull(position, "position");
@@ -40,7 +41,7 @@ public record ChunkState(
      * {@code ClientboundBlockEntityDataPacket} built from {@code getUpdateTag} (signs, spawners,
      * banners, …). Container inventories are intentionally not included.
      */
-    public record BlockEntityState(ReplayMath.BlockPos pos, String typeId, MetadataBlob nbtPayload) {
+    public record BlockEntityState(ReplayMath.BlockPos pos, String typeId, MetadataBlob nbtPayload) implements Serializable {
         public BlockEntityState {
             Objects.requireNonNull(pos, "pos");
             Objects.requireNonNull(typeId, "typeId");

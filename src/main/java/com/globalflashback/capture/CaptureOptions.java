@@ -3,8 +3,9 @@ package com.globalflashback.capture;
 /**
  * Options for a single main-thread capture pass.
  *
- * @param chunkRadiusAroundPlayers only already-loaded chunks within this radius of each online player
- * @param includeNonPlayerEntities whether to capture non-player entities in player worlds
+ * @param chunkRadiusAroundPlayers circular chunk radius (Chebyshev corners excluded) around each
+ *                                 online player; only already-loaded chunks are tracked
+ * @param includeNonPlayerEntities whether to capture non-player entities in tracked chunks
  * @param encodeChunkPayloads      when true, fully encode chunk+light packets (initial snapshot
  *                                 only). Per-tick and periodic Keyframes must keep this false:
  *                                 Flashback ZIP does not re-emit mid-stream LevelChunkWithLight for
@@ -16,7 +17,7 @@ public record CaptureOptions(
         boolean includeNonPlayerEntities,
         boolean encodeChunkPayloads
 ) {
-    /** Default radius 8 (~17×17 already-loaded chunks around each player). */
+    /** Default circular radius 8 (~π×8² loaded chunks per player, not a 17×17 square). */
     public static final CaptureOptions DEFAULT = new CaptureOptions(8, true, true);
 
     public CaptureOptions(int chunkRadiusAroundPlayers, boolean includeNonPlayerEntities) {

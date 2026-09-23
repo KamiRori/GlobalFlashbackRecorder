@@ -3,6 +3,7 @@ package com.globalflashback.delta;
 import com.globalflashback.state.GlobalSnapshot;
 
 import java.util.Objects;
+import java.io.Serializable;
 
 /**
  * Periodic full-state restore point (SPEC Keyframe).
@@ -10,7 +11,7 @@ import java.util.Objects;
  * <p>Maps to Flashback replay-chunk snapshot + {@code forcePlaySnapshot} at encode time.
  * Not an editor camera keyframe.
  */
-public record Keyframe(int tick, GlobalSnapshot snapshot) {
+public record Keyframe(int tick, GlobalSnapshot snapshot) implements Serializable {
     public Keyframe {
         if (tick < 0) {
             throw new IllegalArgumentException("tick must be >= 0");

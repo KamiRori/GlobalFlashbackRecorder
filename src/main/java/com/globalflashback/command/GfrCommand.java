@@ -81,7 +81,8 @@ public final class GfrCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("POC written: " + file.toAbsolutePath());
             sender.sendMessage("Online players encoded: " + players
                     + " (camera=" + player.getName() + ").");
-            sender.sendMessage("IMPORTANT: open with Minecraft/Flashback matching this server version (Paper 26.2).");
+            sender.sendMessage("IMPORTANT: open with Minecraft/Flashback matching this server version ("
+                    + nmsAdapter.versionString() + ").");
         } catch (Exception e) {
             plugin.getLogger().severe("POC export failed: " + e.getMessage());
             e.printStackTrace();
@@ -210,9 +211,12 @@ public final class GfrCommand implements CommandExecutor, TabCompleter {
                     + " entities=" + stats.lastEntities()
                     + " chunks=" + stats.lastChunks());
             sender.sendMessage(" seekVerified=" + stats.seekVerified());
-            if (stats.outputFile() != null) {
+            if (stats.encodePending()) {
+                sender.sendMessage(" Encoding Flashback zip asynchronously (worker thread)...");
+            } else if (stats.outputFile() != null) {
                 sender.sendMessage(" Flashback zip: " + stats.outputFile().toAbsolutePath());
-                sender.sendMessage(" Open with Minecraft/Flashback matching Paper 26.2.");
+                sender.sendMessage(" Open with Minecraft/Flashback matching this server ("
+                        + nmsAdapter.versionString() + ").");
             } else {
                 sender.sendMessage(" Encode failed — check server log.");
             }

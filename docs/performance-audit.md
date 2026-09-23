@@ -588,4 +588,43 @@ Async: 几乎空
 
 ---
 
+## 17. Phase 3.5c — Fingerprint / 物品编码（2026-09-23）
+
+| 改动 | 说明 |
+|------|------|
+| `sectionFingerprint` | 去掉 `section.write` + CRC；直接 mix 本地 palette 条目 + `BitStorage.getRaw()`（+ biomes）；GlobalPalette 不迭代 |
+| `packSection` | bits==0 单值 `Arrays.fill`；否则线性 `states.get(i)` |
+| `ItemStackCodec` | `hashItemAndComponents` 命中复用上一 `ReplayItemStack`；主线程 encode scratch |
+| `ReplayItemStack` | 增加 `contentHash`（不参与 equals）；去掉热路径双 clone |
+
+`compileJava`：26.2 + 1.21.11。待 Spark 对比 `sectionFingerprint` / `ItemStackCodec`。
+
+---
+
+## 18. Phase 4 — Async Flashback encode（2026-09-23）
+
+SPEC §34：主线程只采集与冻结；编码 / 压缩 / IO 异步。
+
+| 改动 | 说明 |
+|------|------|
+| `StateActionEncoder.openSession` | 主线程冻结 bootstrap + RegistryAccess |
+| `FlashbackEncoder` | 消费 `Session`，不再持有 live `Player` |
+| `NmsPlatform.prepareEncodeJob` | 每 stop 新 Encoder 实例 |
+| `GlobalReplayRecorder` | `gfr-flashback-encode` 单线程 worker；完成后主线程私聊；`shutdown()` |
+
+默认 `deferEncodeOnStop=true` 现为 **真正 off-main encode**（不再是下一主线程 tick）。
+
+---
+
+## 19. Phase 4b — Delta spill / 有界缓冲（2026-09-23）
+
+| 改动 | 说明 |
+|------|------|
+| `AsyncDeltaPipeline` | 有界队列 256 + `gfr-delta-spill` worker；满则阻塞不丢帧 |
+| `DeltaSpillFile` | 追加序列化非空 `DeltaFrame` |
+| `RecordingOptions.spillDeltas` | 默认 true；verifySeek 时仍可内存双写 |
+| `FlashbackEncoder` | 有 spill 时顺序流式读，避免整表 HashMap |
+
+---
+
 *End of Performance Audit.*

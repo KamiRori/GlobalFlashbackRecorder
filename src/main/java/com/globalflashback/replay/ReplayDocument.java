@@ -5,6 +5,7 @@ import com.globalflashback.delta.Keyframe;
 import com.globalflashback.event.GameplayEvent;
 import com.globalflashback.state.GlobalSnapshot;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -12,8 +13,8 @@ import java.util.Objects;
 /**
  * Immutable logical Global Replay document (SPEC §31).
  *
- * <p>This is the in-process model before Flashback ZIP encoding.
- * One Event → one {@link ReplayDocument}.
+ * <p>Deltas may live in-memory ({@link #deltas()}) and/or on an async spill file
+ * ({@link #deltaSpill()}) for long recordings (H11). Encoder prefers the spill when present.
  */
 public record ReplayDocument(
         ReplayMetadata metadata,
@@ -21,7 +22,8 @@ public record ReplayDocument(
         List<Keyframe> keyframes,
         List<DeltaFrame> deltas,
         List<GameplayEvent> events,
-        ReplayIndex index
+        ReplayIndex index,
+        Path deltaSpill
 ) {
     public ReplayDocument {
         Objects.requireNonNull(metadata, "metadata");
@@ -43,11 +45,14 @@ public record ReplayDocument(
         private final List<DeltaFrame> deltas = new ArrayList<>();
         private final List<GameplayEvent> events = new ArrayList<>();
         private final ReplayIndex index = new ReplayIndex();
+        private Path deltaSpill;
+        private int lastDeltaTick = -1;
 
         private Builder(ReplayMetadata metadata, GlobalSnapshot initialSnapshot) {
             this.metadata = Objects.requireNonNull(metadata, "metadata");
             this.initialSnapshot = Objects.requireNonNull(initialSnapshot, "initialSnapshot");
             this.index.addKeyframe(initialSnapshot.tick());
+            this.lastDeltaTick = initialSnapshot.tick();
         }
 
         public Builder metadata(ReplayMetadata metadata) {
@@ -59,14 +64,26 @@ public record ReplayDocument(
             return metadata;
         }
 
+        public Builder deltaSpill(Path deltaSpill) {
+            this.deltaSpill = deltaSpill;
+            return this;
+        }
+
+        public Builder noteDeltaTick(int tick) {
+            lastDeltaTick = Math.max(lastDeltaTick, tick);
+            return this;
+        }
+
         public Builder addKeyframe(Keyframe keyframe) {
             keyframes.add(Objects.requireNonNull(keyframe, "keyframe"));
             index.addKeyframe(keyframe.tick());
+            lastDeltaTick = Math.max(lastDeltaTick, keyframe.tick());
             return this;
         }
 
         public Builder addDelta(DeltaFrame frame) {
             deltas.add(Objects.requireNonNull(frame, "frame"));
+            lastDeltaTick = Math.max(lastDeltaTick, frame.tick());
             return this;
         }
 
@@ -76,7 +93,7 @@ public record ReplayDocument(
         }
 
         public ReplayDocument build() {
-            int lastTick = initialSnapshot.tick();
+            int lastTick = Math.max(initialSnapshot.tick(), lastDeltaTick);
             for (DeltaFrame delta : deltas) {
                 lastTick = Math.max(lastTick, delta.tick());
             }
@@ -85,7 +102,8 @@ public record ReplayDocument(
             }
             int duration = Math.max(0, lastTick - initialSnapshot.tick());
             ReplayMetadata finalized = metadata.withTotalTicks(Math.max(metadata.totalTicks(), duration));
-            return new ReplayDocument(finalized, initialSnapshot, keyframes, deltas, events, index);
+            return new ReplayDocument(
+                    finalized, initialSnapshot, keyframes, deltas, events, index, deltaSpill);
         }
     }
 }

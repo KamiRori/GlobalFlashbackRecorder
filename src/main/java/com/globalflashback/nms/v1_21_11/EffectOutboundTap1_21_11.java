@@ -1,4 +1,4 @@
-package com.globalflashback.nms.v26_2;
+package com.globalflashback.nms.v1_21_11;
 
 import com.globalflashback.api.OutboundPacketCapture;
 import com.globalflashback.capture.RecordingSideChannel;
@@ -62,7 +62,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>Packets / bundles marked via {@link OutboundPacketCapture} are forwarded but never recorded
  * (any packet type; checked before type filters).
  */
-public final class EffectOutboundTap26_2 implements Listener, EffectOutboundTap {
+public final class EffectOutboundTap1_21_11 implements Listener, EffectOutboundTap {
     private static final String HANDLER_NAME = "gfr_effect_tap";
 
     /**
@@ -73,7 +73,7 @@ public final class EffectOutboundTap26_2 implements Listener, EffectOutboundTap 
 
     private final Plugin plugin;
     private final RecordingSideChannel sideChannel;
-    private final EffectPacketFactory26_2 factory = new EffectPacketFactory26_2();
+    private final EffectPacketFactory1_21_11 factory = new EffectPacketFactory1_21_11();
     private final Map<UUID, Boolean> attached = new ConcurrentHashMap<>();
     /**
      * Per-tick claim set: identity keys (same packet instance) and structural keys (same content,
@@ -84,7 +84,7 @@ public final class EffectOutboundTap26_2 implements Listener, EffectOutboundTap 
     private volatile int lastTick = -1;
     private boolean registered;
 
-    public EffectOutboundTap26_2(Plugin plugin, RecordingSideChannel sideChannel) {
+    public EffectOutboundTap1_21_11(Plugin plugin, RecordingSideChannel sideChannel) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.sideChannel = Objects.requireNonNull(sideChannel, "sideChannel");
     }

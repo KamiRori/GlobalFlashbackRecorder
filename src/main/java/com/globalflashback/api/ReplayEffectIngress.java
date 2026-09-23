@@ -1,6 +1,7 @@
 package com.globalflashback.api;
 
-import com.globalflashback.nms.v26_2.EffectPacketFactory26_2;
+import com.globalflashback.nms.EffectPacketEncoder;
+import com.globalflashback.nms.NmsPlatforms;
 import com.globalflashback.state.MetadataBlob;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
@@ -30,7 +31,7 @@ public final class ReplayEffectIngress {
         void offer(int tick, byte[] clientboundPayload);
     }
 
-    private static final EffectPacketFactory26_2 ENCODER = new EffectPacketFactory26_2();
+    private static final EffectPacketEncoder ENCODER = NmsPlatforms.create().effects();
     private static volatile Sink sink;
 
     private ReplayEffectIngress() {}

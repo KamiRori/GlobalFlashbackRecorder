@@ -2,12 +2,13 @@ package com.globalflashback.state;
 
 import java.util.Arrays;
 import java.util.Objects;
+import java.io.Serializable;
 
 /**
  * Opaque entity metadata blob produced by Capture (e.g. non-default synched data).
  * Phase 2 stores bytes only; interpretation belongs to NMS adapter / Encoder.
  */
-public record MetadataBlob(byte[] payload) {
+public record MetadataBlob(byte[] payload) implements Serializable {
     public static final MetadataBlob EMPTY = new MetadataBlob(new byte[0]);
 
     public MetadataBlob {

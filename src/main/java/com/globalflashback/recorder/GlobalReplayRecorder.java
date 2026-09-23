@@ -11,11 +11,12 @@ import com.globalflashback.delta.Keyframe;
 import com.globalflashback.delta.SnapshotApplier;
 import com.globalflashback.delta.SnapshotDiffer;
 import com.globalflashback.delta.StateChange;
-import com.globalflashback.nms.NmsAdapter;
-import com.globalflashback.nms.v26_2.EffectOutboundTap26_2;
-import com.globalflashback.replay.FlashbackEncoder;
-import com.globalflashback.replay.ReplayBuffer;
+import com.globalflashback.nms.EffectOutboundTap;
+import com.globalflashback.nms.NmsPlatform;
+import com.globalflashback.replay.AsyncDeltaPipeline;
+import com.globalflashback.replay.DeltaSpillFile;
 import com.globalflashback.replay.ReplayDocument;
+import com.globalflashback.replay.ReplayEncodeJob;
 import com.globalflashback.replay.ReplayMetadata;
 import com.globalflashback.state.GlobalSnapshot;
 import com.globalflashback.state.MetadataBlob;
@@ -29,35 +30,51 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
 /**
- * Main-thread Global Replay session: Initial Snapshot + per-tick Delta + periodic Keyframe.
+ * Main-thread Global Replay session: Initial Snapshot + per-tick Delta + optional seek Keyframes.
  *
- * <p>On stop, encodes a Flashback {@code .zip} via {@link FlashbackEncoder}.
+ * <p>On stop, seals an immutable {@link ReplayDocument}. By default Flashback ZIP encode runs on a
+ * dedicated worker after main-thread {@link NmsPlatform#prepareEncodeJob} (H10 / SPEC §34).
  */
 public final class GlobalReplayRecorder {
     private final JavaPlugin plugin;
     private final ServerStateCapture capture;
-    private final NmsAdapter nmsAdapter;
-    private final FlashbackEncoder encoder;
+    private final NmsPlatform platform;
     private final Logger logger;
     private final RecordingSideChannel sideChannel = new RecordingSideChannel();
     private final RecordingListeners listeners;
     private final SwingSampler swingSampler;
-    private final EffectOutboundTap26_2 effectTap;
+    private final EffectOutboundTap effectTap;
+    private final ExecutorService encodeExecutor;
 
     private Session session;
 
-    public GlobalReplayRecorder(JavaPlugin plugin, ServerStateCapture capture, NmsAdapter nmsAdapter) {
+    public GlobalReplayRecorder(JavaPlugin plugin, ServerStateCapture capture, NmsPlatform platform) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.capture = Objects.requireNonNull(capture, "capture");
-        this.nmsAdapter = Objects.requireNonNull(nmsAdapter, "nmsAdapter");
-        this.encoder = new FlashbackEncoder();
+        this.platform = Objects.requireNonNull(platform, "platform");
         this.logger = plugin.getLogger();
-        this.listeners = new RecordingListeners(plugin, sideChannel, capture.dirtyChunks());
-        this.swingSampler = new SwingSampler(sideChannel);
-        this.effectTap = new EffectOutboundTap26_2(plugin, sideChannel);
+        this.effectTap = platform.createEffectTap(plugin, sideChannel);
+        this.listeners = new RecordingListeners(
+                plugin, sideChannel, capture.dirtyChunks(), platform.effects(), effectTap);
+        this.swingSampler = new SwingSampler(sideChannel, platform.effects());
+        this.encodeExecutor = Executors.newSingleThreadExecutor(encodeThreadFactory());
+    }
+
+    private static ThreadFactory encodeThreadFactory() {
+        AtomicInteger n = new AtomicInteger();
+        return runnable -> {
+            Thread t = new Thread(runnable, "gfr-flashback-encode-" + n.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        };
     }
 
     public synchronized boolean isRecording() {
@@ -68,7 +85,7 @@ public final class GlobalReplayRecorder {
         if (session == null) {
             return RecordingStats.idle();
         }
-        return session.stats(true, false, null);
+        return session.stats(true, false, null, false);
     }
 
     public synchronized boolean start(String name, RecordingOptions options) {
@@ -88,18 +105,16 @@ public final class GlobalReplayRecorder {
         ReplayMetadata metadata = new ReplayMetadata(
                 UUID.randomUUID(),
                 name,
-                nmsAdapter.versionString(),
+                platform.adapter().versionString(),
                 primaryWorldName(initial),
-                nmsAdapter.dataVersion(),
-                nmsAdapter.protocolVersion(),
+                platform.adapter().dataVersion(),
+                platform.adapter().protocolVersion(),
                 0
         );
 
-        ReplayBuffer buffer = new ReplayBuffer();
-        buffer.setInitialSnapshot(initial);
         ReplayDocument.Builder document = ReplayDocument.builder(metadata, initial);
 
-        Session started = new Session(name, options, initial, buffer, document, tick);
+        Session started = new Session(name, options, initial, document, tick);
         started.task = Bukkit.getScheduler().runTaskTimer(plugin, this::tickIfRecording, 1L, 1L);
         this.session = started;
 
@@ -113,6 +128,9 @@ public final class GlobalReplayRecorder {
         logger.info("Recording started name=" + name
                 + " tick=" + tick
                 + " keyframeInterval=" + options.keyframeIntervalTicks()
+                + " verifySeek=" + options.verifySeekOnStop()
+                + " deferEncode=" + options.deferEncodeOnStop()
+                + " spillDeltas=" + options.spillDeltas()
                 + " players=" + initial.players().size()
                 + " entities=" + initial.entities().size()
                 + " chunks=" + initial.chunks().size());
@@ -120,9 +138,10 @@ public final class GlobalReplayRecorder {
     }
 
     /**
-     * Stops recording, verifies seek, encodes Flashback {@code .zip}.
+     * Stops capture on the main thread, optionally verifies seek, then encodes Flashback {@code .zip}
+     * (async worker by default, or synchronously when {@link RecordingOptions#deferEncodeOnStop()} is false).
      *
-     * @param camera ego player for create_local_player / registry bootstrap
+     * @param camera ego player for create_local_player / registry bootstrap (main-thread freeze only)
      */
     public synchronized RecordingStats stop(Player camera) {
         if (!Bukkit.isPrimaryThread()) {
@@ -144,25 +163,69 @@ public final class GlobalReplayRecorder {
         swingSampler.clear();
         sideChannel.clear();
 
-        boolean seekOk = ending.verifySeek();
-        ending.buffer.seal();
-
         int durationTicks = Math.max(0, ending.previous.tick() - ending.startTick);
         ending.document.metadata(ending.document.metadata().withTotalTicks(durationTicks));
-        ReplayDocument document = ending.document.build();
 
-        Path outFile = null;
-        try {
-            Path outDir = plugin.getDataFolder().toPath().resolve("replays");
-            outFile = outDir.resolve(sanitize(ending.name) + ".zip");
-            encoder.encode(document, camera, outFile);
-            logger.info("Flashback zip written: " + outFile.toAbsolutePath());
-        } catch (Exception e) {
-            logger.severe("Flashback encode failed: " + e.getMessage());
-            e.printStackTrace();
+        Path spillPath = null;
+        if (ending.deltaPipeline != null) {
+            try {
+                ending.deltaPipeline.sealAndAwait();
+                spillPath = ending.deltaPipeline.path();
+                ending.document.deltaSpill(spillPath);
+                logger.info("Delta spill sealed frames=" + ending.deltaPipeline.spilledFrames()
+                        + " path=" + spillPath.getFileName());
+            } catch (Exception e) {
+                logger.severe("Delta spill seal failed: " + e.getMessage());
+                e.printStackTrace();
+                ending.deltaPipeline.deleteQuietly();
+                ending.deltaPipeline = null;
+            }
         }
 
-        RecordingStats stats = ending.stats(false, seekOk, outFile);
+        ReplayDocument document = ending.document.build();
+
+        boolean seekOk = false;
+        if (ending.options.verifySeekOnStop()) {
+            seekOk = verifySeek(document, ending.initial, ending.previous);
+        }
+
+        Path outFile = plugin.getDataFolder().toPath().resolve("replays")
+                .resolve(sanitize(ending.name) + ".zip");
+
+        // Prepare on main thread (bootstrap + RegistryAccess), then encode off-thread when deferred.
+        ReplayEncodeJob job = platform.prepareEncodeJob(document, camera, outFile);
+        UUID cameraId = camera.getUniqueId();
+        String recName = ending.name;
+        AsyncDeltaPipeline spillToDelete = ending.deltaPipeline;
+
+        if (ending.options.deferEncodeOnStop()) {
+            encodeExecutor.execute(() -> {
+                try {
+                    runEncodeJob(job, cameraId, recName, outFile);
+                } finally {
+                    if (spillToDelete != null) {
+                        spillToDelete.deleteQuietly();
+                    }
+                }
+            });
+            RecordingStats stats = ending.stats(false, seekOk, null, true);
+            logger.info("Recording stopped name=" + ending.name
+                    + " ticks=" + stats.ticksRecorded()
+                    + " deltas=" + stats.nonEmptyDeltas()
+                    + " empty=" + stats.emptyTicks()
+                    + " keyframes=" + stats.keyframes()
+                    + " changes=" + stats.totalChanges()
+                    + " seekVerified=" + seekOk
+                    + " encode=async-worker"
+                    + " spill=" + (spillPath != null));
+            return stats;
+        }
+
+        Path written = runEncodeJobSync(job, outFile);
+        if (spillToDelete != null) {
+            spillToDelete.deleteQuietly();
+        }
+        RecordingStats stats = ending.stats(false, seekOk, written, false);
         logger.info("Recording stopped name=" + ending.name
                 + " ticks=" + stats.ticksRecorded()
                 + " deltas=" + stats.nonEmptyDeltas()
@@ -170,7 +233,7 @@ public final class GlobalReplayRecorder {
                 + " keyframes=" + stats.keyframes()
                 + " changes=" + stats.totalChanges()
                 + " seekVerified=" + seekOk
-                + " file=" + (outFile != null ? outFile.getFileName() : "none"));
+                + " file=" + (written != null ? written.getFileName() : "none"));
         return stats;
     }
 
@@ -188,8 +251,101 @@ public final class GlobalReplayRecorder {
         ReplayEffectIngress.unbind();
         swingSampler.clear();
         sideChannel.clear();
-        ending.buffer.seal();
-        return ending.stats(false, false, null);
+        if (ending.deltaPipeline != null) {
+            ending.deltaPipeline.close();
+            ending.deltaPipeline.deleteQuietly();
+        }
+        return ending.stats(false, false, null, false);
+    }
+
+    /**
+     * Shuts down the encode worker. Call from plugin {@code onDisable}.
+     */
+    public void shutdown() {
+        encodeExecutor.shutdown();
+        try {
+            if (!encodeExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                encodeExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            encodeExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void runEncodeJob(ReplayEncodeJob job, UUID cameraId, String name, Path outFile) {
+        Path written = null;
+        try {
+            written = job.run();
+            logger.info("Flashback zip written: " + outFile.toAbsolutePath());
+        } catch (Exception e) {
+            logger.severe("Flashback encode failed for '" + name + "': " + e.getMessage());
+            e.printStackTrace();
+        }
+        Path result = written;
+        Bukkit.getScheduler().runTask(plugin, () -> announceEncodeResult(cameraId, name, result));
+    }
+
+    private Path runEncodeJobSync(ReplayEncodeJob job, Path outFile) {
+        try {
+            Path written = job.run();
+            logger.info("Flashback zip written: " + outFile.toAbsolutePath());
+            return written;
+        } catch (Exception e) {
+            logger.severe("Flashback encode failed: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    private void announceEncodeResult(UUID cameraId, String name, Path written) {
+        Player camera = Bukkit.getPlayer(cameraId);
+        if (camera == null || !camera.isOnline()) {
+            if (written == null) {
+                logger.severe("Flashback encode failed for '" + name + "' (camera offline)");
+            }
+            return;
+        }
+        if (written != null) {
+            camera.sendMessage("Flashback zip ready: " + written.toAbsolutePath());
+            camera.sendMessage("Open with Minecraft/Flashback matching this server ("
+                    + platform.adapter().versionString() + ").");
+        } else {
+            camera.sendMessage("Flashback encode failed for '" + name + "' — check server log.");
+        }
+    }
+
+    private boolean verifySeek(ReplayDocument document, GlobalSnapshot initial, GlobalSnapshot previous) {
+        List<DeltaFrame> deltas = document.deltas();
+        if (deltas.isEmpty() && document.deltaSpill() != null) {
+            try {
+                List<DeltaFrame> loaded = new ArrayList<>();
+                try (DeltaSpillFile.Reader reader = DeltaSpillFile.open(document.deltaSpill())) {
+                    for (DeltaFrame frame : reader) {
+                        loaded.add(frame);
+                    }
+                }
+                deltas = loaded;
+            } catch (Exception e) {
+                logger.warning("Seek verify could not read delta spill: " + e.getMessage());
+                return false;
+            }
+        }
+        if (deltas.isEmpty() && document.keyframes().isEmpty()) {
+            return true;
+        }
+        try {
+            GlobalSnapshot reconstructed = SnapshotApplier.seek(
+                    initial, document.keyframes(), deltas, previous.tick());
+            boolean ok = snapshotContentEquals(reconstructed, previous);
+            if (!ok) {
+                logger.warning("Seek verify FAILED at tick " + previous.tick());
+            }
+            return ok;
+        } catch (Exception e) {
+            logger.warning("Seek verify error: " + e.getMessage());
+            return false;
+        }
     }
 
     private synchronized void tickIfRecording() {
@@ -213,9 +369,9 @@ public final class GlobalReplayRecorder {
         private final String name;
         private final RecordingOptions options;
         private final GlobalSnapshot initial;
-        private final ReplayBuffer buffer;
         private final ReplayDocument.Builder document;
         private final int startTick;
+        private AsyncDeltaPipeline deltaPipeline;
 
         private GlobalSnapshot previous;
         private int lastKeyframeTick;
@@ -224,8 +380,6 @@ public final class GlobalReplayRecorder {
         private int emptyTicks;
         private int keyframes;
         private long totalChanges;
-        private final List<Keyframe> keyframeList = new ArrayList<>();
-        private final List<DeltaFrame> deltaList = new ArrayList<>();
         /** Reused each tick on the main thread to avoid empty-tick ArrayList churn. */
         private final List<StateChange> silentBlocksScratch = new ArrayList<>();
         private final ArrayList<StateChange> mergeScratch = new ArrayList<>();
@@ -235,18 +389,28 @@ public final class GlobalReplayRecorder {
                 String name,
                 RecordingOptions options,
                 GlobalSnapshot initial,
-                ReplayBuffer buffer,
                 ReplayDocument.Builder document,
                 int startTick
         ) {
             this.name = name;
             this.options = options;
             this.initial = initial;
-            this.buffer = buffer;
             this.document = document;
             this.startTick = startTick;
             this.previous = initial;
             this.lastKeyframeTick = startTick;
+            if (options.spillDeltas()) {
+                try {
+                    Path spill = plugin.getDataFolder().toPath()
+                            .resolve("replays")
+                            .resolve(".spill")
+                            .resolve(sanitize(name) + "-" + startTick + ".deltas");
+                    this.deltaPipeline = AsyncDeltaPipeline.start(spill, logger);
+                } catch (Exception e) {
+                    logger.warning("Delta spill disabled (failed to start): " + e.getMessage());
+                    this.deltaPipeline = null;
+                }
+            }
         }
 
         private void onTick() {
@@ -285,16 +449,28 @@ public final class GlobalReplayRecorder {
                     }
                     nonEmptyDeltas++;
                     totalChanges += frame.changes().size();
-                    document.addDelta(frame);
-                    deltaList.add(frame);
+                    document.noteDeltaTick(tick);
+                    if (deltaPipeline != null) {
+                        try {
+                            deltaPipeline.offer(frame);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            logger.severe("Interrupted while offering delta to spill");
+                        }
+                    }
+                    // Keep in-memory deltas only when seek verify needs them (or spill unavailable).
+                    if (options.verifySeekOnStop() || deltaPipeline == null) {
+                        document.addDelta(frame);
+                    }
                 }
 
                 if (keyframeDue) {
-                    Keyframe keyframe = new Keyframe(tick, current);
-                    document.addKeyframe(keyframe);
-                    keyframeList.add(keyframe);
                     keyframes++;
                     lastKeyframeTick = tick;
+                    // H7: full GlobalSnapshot keyframes only when seek verify is enabled.
+                    if (options.verifySeekOnStop()) {
+                        document.addKeyframe(new Keyframe(tick, current));
+                    }
                 }
 
                 previous = current;
@@ -304,26 +480,12 @@ public final class GlobalReplayRecorder {
             }
         }
 
-        private boolean verifySeek() {
-            if (ticksRecorded == 0) {
-                return true;
-            }
-            try {
-                GlobalSnapshot reconstructed = SnapshotApplier.seek(
-                        initial, keyframeList, deltaList, previous.tick());
-                boolean ok = snapshotContentEquals(reconstructed, previous);
-                if (!ok) {
-                    logger.warning("Seek verify FAILED at tick " + previous.tick());
-                }
-                return ok;
-            } catch (Exception e) {
-                logger.warning("Seek verify error: " + e.getMessage());
-                e.printStackTrace();
-                return false;
-            }
-        }
-
-        private RecordingStats stats(boolean recording, boolean seekVerified, Path outputFile) {
+        private RecordingStats stats(
+                boolean recording,
+                boolean seekVerified,
+                Path outputFile,
+                boolean encodePending
+        ) {
             GlobalSnapshot last = previous;
             return new RecordingStats(
                     recording,
@@ -339,10 +501,12 @@ public final class GlobalReplayRecorder {
                     last.entities().size(),
                     last.chunks().size(),
                     seekVerified,
-                    outputFile
+                    outputFile,
+                    encodePending
             );
         }
     }
+
 
     static boolean snapshotContentEquals(GlobalSnapshot a, GlobalSnapshot b) {
         return a.worlds().equals(b.worlds())

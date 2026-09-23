@@ -10,6 +10,7 @@ import com.globalflashback.state.WorldState;
 
 import java.util.Objects;
 import java.util.UUID;
+import java.io.Serializable;
 
 /**
  * Immutable, change-driven updates bound to a server tick.
@@ -17,7 +18,7 @@ import java.util.UUID;
  * <p>Capture/Diff produce these; FlashbackEncoder consumes them later.
  * No Bukkit/NMS references.
  */
-public sealed interface StateChange permits
+public sealed interface StateChange extends Serializable permits
         StateChange.PlayerUpsert,
         StateChange.PlayerRemove,
         StateChange.EntitySpawn,

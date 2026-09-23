@@ -3,6 +3,7 @@ package com.globalflashback.state;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.io.Serializable;
 
 /**
  * Immutable entity state for Global Replay (includes players as entities when needed).
@@ -24,7 +25,7 @@ public record EntityState(
         EquipmentState equipment,
         MetadataBlob metadata,
         int spawnData
-) {
+) implements Serializable {
     public EntityState {
         Objects.requireNonNull(uuid, "uuid");
         Objects.requireNonNull(entityType, "entityType");

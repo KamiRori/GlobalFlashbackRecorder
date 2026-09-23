@@ -4,6 +4,8 @@ import java.nio.file.Path;
 
 /**
  * Immutable counters for a recording session (or live status snapshot).
+ *
+ * @param encodePending when true, stop sealed the document and ZIP encode runs on a worker thread
  */
 public record RecordingStats(
         boolean recording,
@@ -19,9 +21,10 @@ public record RecordingStats(
         int lastEntities,
         int lastChunks,
         boolean seekVerified,
-        Path outputFile
+        Path outputFile,
+        boolean encodePending
 ) {
     public static RecordingStats idle() {
-        return new RecordingStats(false, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, null);
+        return new RecordingStats(false, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, null, false);
     }
 }

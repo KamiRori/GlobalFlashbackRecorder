@@ -5,7 +5,7 @@ import com.globalflashback.format.ChunkWriter;
 import com.globalflashback.format.FlashbackContainer;
 import com.globalflashback.format.FlashbackMeta;
 import com.globalflashback.format.ReplayAction;
-import com.globalflashback.nms.v26_2.SnapshotBuilder26_2;
+import com.globalflashback.nms.PocSnapshotSupport;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Phase-1 POC: capture current server-visible state once and write a minimal Flashback replay.
@@ -28,9 +29,11 @@ public final class PocReplayExporter {
     private static final int POC_DURATION_TICKS = 40;
 
     private final JavaPlugin plugin;
+    private final PocSnapshotSupport snapshots;
 
-    public PocReplayExporter(JavaPlugin plugin) {
-        this.plugin = plugin;
+    public PocReplayExporter(JavaPlugin plugin, PocSnapshotSupport snapshots) {
+        this.plugin = Objects.requireNonNull(plugin, "plugin");
+        this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
     }
 
     public Path export(Player camera, String replayName) throws IOException {
@@ -43,7 +46,7 @@ public final class PocReplayExporter {
             throw new IllegalStateException("Need at least one online player for POC");
         }
 
-        List<ReplayAction> snapshot = SnapshotBuilder26_2.build(camera, online);
+        List<ReplayAction> snapshot = snapshots.build(camera, online);
 
         List<ReplayAction> stream = new ArrayList<>(POC_DURATION_TICKS);
         for (int i = 0; i < POC_DURATION_TICKS; i++) {
@@ -54,10 +57,10 @@ public final class PocReplayExporter {
 
         FlashbackMeta meta = new FlashbackMeta();
         meta.name = replayName;
-        meta.versionString = SnapshotBuilder26_2.versionString();
+        meta.versionString = snapshots.versionString();
         meta.worldName = camera.getWorld().getName();
-        meta.dataVersion = SnapshotBuilder26_2.dataVersion();
-        meta.protocolVersion = SnapshotBuilder26_2.protocolVersion();
+        meta.dataVersion = snapshots.dataVersion();
+        meta.protocolVersion = snapshots.protocolVersion();
         meta.totalTicks = POC_DURATION_TICKS;
         // Inner entry names still use ".flashback" (Flashback chunk stream naming).
         meta.chunks.put("c0.flashback", new ChunkMeta(POC_DURATION_TICKS, true));
@@ -82,7 +85,6 @@ public final class PocReplayExporter {
     }
 
     private static String sanitize(String name) {
-        String cleaned = name.replaceAll("[^a-zA-Z0-9._-]", "_");
-        return cleaned.isEmpty() ? "poc" : cleaned;
+        return name.replaceAll("[^a-zA-Z0-9._-]", "_");
     }
 }

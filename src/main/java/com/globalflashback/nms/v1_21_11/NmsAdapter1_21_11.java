@@ -1,4 +1,4 @@
-package com.globalflashback.nms.v26_2;
+package com.globalflashback.nms.v1_21_11;
 
 import com.destroystokyo.paper.profile.ProfileProperty;
 import com.globalflashback.capture.ChunkBlockCache;
@@ -67,13 +67,13 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Paper / Minecraft 26.2 NMS adapter. All {@code net.minecraft.*} access for capture lives here.
+ * Paper / Minecraft 1.21.11 NMS adapter. All {@code net.minecraft.*} access for capture lives here.
  *
  * <p>Main-thread only. Section fingerprints hash palette + bit-storage in-place (no
  * {@code section.write} / CRC). Item capture reuses prior {@link ReplayItemStack} when
  * {@link ItemStack#hashItemAndComponents} matches.
  */
-public final class NmsAdapter26_2 implements NmsAdapter {
+public final class NmsAdapter1_21_11 implements NmsAdapter {
     /**
      * Local palettes in a section never exceed 4096 distinct entries; {@link net.minecraft.world.level.chunk.GlobalPalette}
      * reports the full registry size and must not be iterated.
@@ -82,7 +82,7 @@ public final class NmsAdapter26_2 implements NmsAdapter {
 
     /** Reused for game-packet encoding (metadata / block updates); main thread only. */
     private final ByteBuf encodeScratch = Unpooled.buffer(512);
-    private final ItemStackCodec26_2 itemCodec = new ItemStackCodec26_2();
+    private final ItemStackCodec1_21_11 itemCodec = new ItemStackCodec1_21_11();
 
     @Override
     public PlayerState capturePlayer(Player player) {
@@ -777,7 +777,7 @@ public final class NmsAdapter26_2 implements NmsAdapter {
         h = mix(h, states.bitsPerEntry());
         h = mix(h, data.palette().getSize());
         h = mix(h, data.storage().getSize());
-        h = mix(h, section.hasFluid() ? 1 : 0);
+        h = mix(h, section.isRandomlyTickingFluids() ? 1 : 0);
         return h == 0L ? 1L : h;
     }
 
@@ -821,7 +821,7 @@ public final class NmsAdapter26_2 implements NmsAdapter {
             h = mix(h, states.bitsPerEntry());
             h = mix(h, data.palette().getSize());
             h = mix(h, data.storage().getSize());
-            h = mix(h, section.hasFluid() ? 1 : 0);
+            h = mix(h, section.isRandomlyTickingFluids() ? 1 : 0);
         }
         h = mix(h, chunk.getBlockEntities().size());
         return h == 0L ? 1L : h;

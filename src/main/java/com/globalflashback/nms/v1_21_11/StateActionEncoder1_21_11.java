@@ -1,4 +1,4 @@
-package com.globalflashback.nms.v26_2;
+package com.globalflashback.nms.v1_21_11;
 
 import com.globalflashback.nms.StateActionEncoder;
 
@@ -74,7 +74,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Encodes {@link GlobalSnapshot} / {@link StateChange} into Flashback {@link ReplayAction}s (26.2).
+ * Encodes {@link GlobalSnapshot} / {@link StateChange} into Flashback {@link ReplayAction}s (1.21.11).
  *
  * <p>Movement uses {@code flashback:action/move_entities} (Flashback refuses vanilla MoveEntity
  * packets and interpolates from move_entities). Riding uses {@link ClientboundSetPassengersPacket}.
@@ -83,7 +83,7 @@ import java.util.UUID;
  * <p>{@link #openSession(Player)} must run on the main thread. The bound {@link Session} may encode
  * on an async worker (uses frozen bootstrap + {@link RegistryAccess} only).
  */
-public final class StateActionEncoder26_2 implements StateActionEncoder {
+public final class StateActionEncoder1_21_11 implements StateActionEncoder {
     private static final int[] EMPTY_PASSENGERS = new int[0];
 
     private ProtocolInfo<ClientGamePacketListener> cachedProtocolInfo;
@@ -159,7 +159,7 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
         ServerPlayer sp = craft.getHandle();
         UUID cameraUuid = camera.getUniqueId();
         // Freeze bootstrap while camera / server registries are still live.
-        List<ReplayAction> bootstrap = List.copyOf(SnapshotBuilder26_2.bootstrapActions(camera));
+        List<ReplayAction> bootstrap = List.copyOf(SnapshotBuilder1_21_11.bootstrapActions(camera));
         RegistryAccess registries = sp.registryAccess();
         return new Session() {
             @Override
@@ -815,7 +815,7 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
         List<ReplayItemStack> hotbar = player.hotbar();
         for (int i = 0; i < 9; i++) {
             ReplayItemStack item = i < hotbar.size() ? hotbar.get(i) : ReplayItemStack.EMPTY;
-            ItemStack stack = ItemStackCodec26_2.toItemStack(activeRegistries, item);
+            ItemStack stack = ItemStackCodec1_21_11.toItemStack(activeRegistries, item);
             actions.add(ReplayAction.gamePacket(encode(
                     new ClientboundContainerSetSlotPacket(0, 0, i, stack))));
         }
@@ -828,12 +828,12 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
         }
         List<Pair<EquipmentSlot, ItemStack>> slots = new ArrayList<>();
         // Always include all slots so empties clear previous items; keep full components.
-        slots.add(Pair.of(EquipmentSlot.MAINHAND, ItemStackCodec26_2.toItemStack(activeRegistries, equipment.mainHand())));
-        slots.add(Pair.of(EquipmentSlot.OFFHAND, ItemStackCodec26_2.toItemStack(activeRegistries, equipment.offHand())));
-        slots.add(Pair.of(EquipmentSlot.HEAD, ItemStackCodec26_2.toItemStack(activeRegistries, equipment.helmet())));
-        slots.add(Pair.of(EquipmentSlot.CHEST, ItemStackCodec26_2.toItemStack(activeRegistries, equipment.chestplate())));
-        slots.add(Pair.of(EquipmentSlot.LEGS, ItemStackCodec26_2.toItemStack(activeRegistries, equipment.leggings())));
-        slots.add(Pair.of(EquipmentSlot.FEET, ItemStackCodec26_2.toItemStack(activeRegistries, equipment.boots())));
+        slots.add(Pair.of(EquipmentSlot.MAINHAND, ItemStackCodec1_21_11.toItemStack(activeRegistries, equipment.mainHand())));
+        slots.add(Pair.of(EquipmentSlot.OFFHAND, ItemStackCodec1_21_11.toItemStack(activeRegistries, equipment.offHand())));
+        slots.add(Pair.of(EquipmentSlot.HEAD, ItemStackCodec1_21_11.toItemStack(activeRegistries, equipment.helmet())));
+        slots.add(Pair.of(EquipmentSlot.CHEST, ItemStackCodec1_21_11.toItemStack(activeRegistries, equipment.chestplate())));
+        slots.add(Pair.of(EquipmentSlot.LEGS, ItemStackCodec1_21_11.toItemStack(activeRegistries, equipment.leggings())));
+        slots.add(Pair.of(EquipmentSlot.FEET, ItemStackCodec1_21_11.toItemStack(activeRegistries, equipment.boots())));
         return List.of(ReplayAction.gamePacket(encode(new ClientboundSetEquipmentPacket(entityId, slots))));
     }
 

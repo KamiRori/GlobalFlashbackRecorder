@@ -1,7 +1,7 @@
 name: GlobalFlashbackRecorder
 version: '${version}'
 main: com.globalflashback.GlobalFlashbackPlugin
-api-version: '26.2'
+api-version: '${apiVersion}'
 authors: [GlobalFlashback]
 description: Global Flashback Recorder — Flashback Encoder
 commands:

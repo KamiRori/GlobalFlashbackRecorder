@@ -2,7 +2,9 @@ package com.globalflashback.capture;
 
 import com.destroystokyo.paper.event.block.BlockDestroyEvent;
 import com.globalflashback.delta.StateChange;
-import com.globalflashback.nms.v26_2.EffectPacketFactory26_2;
+import com.globalflashback.nms.ContainerBlockEntityCapture;
+import com.globalflashback.nms.EffectOutboundTap;
+import com.globalflashback.nms.EffectPacketEncoder;
 import com.globalflashback.state.DimensionId;
 import com.globalflashback.state.MetadataBlob;
 import com.globalflashback.state.ReplayMath;
@@ -90,7 +92,8 @@ public final class RecordingListeners implements Listener {
     private final Plugin plugin;
     private final RecordingSideChannel sideChannel;
     private final ChunkDirtyTracker dirtyChunks;
-    private final EffectPacketFactory26_2 effects = new EffectPacketFactory26_2();
+    private final EffectPacketEncoder effects;
+    private final EffectOutboundTap effectTap;
     private boolean registered;
 
     /** Per-tick dedupe: packed pos → last offered block-data string. */
@@ -108,10 +111,18 @@ public final class RecordingListeners implements Listener {
     /** player → packed keys of containers they currently have open. */
     private final Map<UUID, Set<Long>> openContainersByPlayer = new HashMap<>();
 
-    public RecordingListeners(Plugin plugin, RecordingSideChannel sideChannel, ChunkDirtyTracker dirtyChunks) {
+    public RecordingListeners(
+            Plugin plugin,
+            RecordingSideChannel sideChannel,
+            ChunkDirtyTracker dirtyChunks,
+            EffectPacketEncoder effects,
+            EffectOutboundTap effectTap
+    ) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.sideChannel = Objects.requireNonNull(sideChannel, "sideChannel");
         this.dirtyChunks = Objects.requireNonNull(dirtyChunks, "dirtyChunks");
+        this.effects = Objects.requireNonNull(effects, "effects");
+        this.effectTap = Objects.requireNonNull(effectTap, "effectTap");
     }
 
     public void register() {
@@ -141,10 +152,10 @@ public final class RecordingListeners implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlace(BlockPlaceEvent event) {
         scheduleBlockAndRelated(event.getBlock(), event.getBlock().getBlockData());
+        // Solo / excluded-source: vanilla playSound may not hit any tapped pipeline. Claim payload
+        // so multiplayer tap copies of the same place sound are not double-recorded.
         MetadataBlob sound = effects.encodeBlockPlaceSound(event.getBlock());
-        if (!sound.isEmpty()) {
-            sideChannel.offer(Bukkit.getCurrentTick(), new StateChange.EffectPacket(sound));
-        }
+        effectTap.offerClaimedEffect(Bukkit.getCurrentTick(), sound);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -158,14 +169,10 @@ public final class RecordingListeners implements Listener {
     public void onBreak(BlockBreakEvent event) {
         Block block = event.getBlock();
         BlockData before = block.getBlockData().clone();
+        // LevelEvent 2001 (destroy particles) — client also plays break sound from this event.
+        // Do not synthesize a separate SoundPacket (would stack with LevelEvent on replay).
         MetadataBlob particles = effects.encodeDestroyBlockParticles(block);
-        if (!particles.isEmpty()) {
-            sideChannel.offer(Bukkit.getCurrentTick(), new StateChange.EffectPacket(particles));
-        }
-        MetadataBlob sound = effects.encodeBlockBreakSound(block);
-        if (!sound.isEmpty()) {
-            sideChannel.offer(Bukkit.getCurrentTick(), new StateChange.EffectPacket(sound));
-        }
+        effectTap.offerClaimedEffect(Bukkit.getCurrentTick(), particles);
         // Capture clicked cell + connected half (bed / tall grass / door) after removal.
         scheduleBlockAndRelated(block, before);
     }
@@ -459,7 +466,7 @@ public final class RecordingListeners implements Listener {
         if (!containerOfferedThisTick.add(key)) {
             return;
         }
-        EffectPacketFactory26_2.ContainerBlockEntityCapture capture = effects.encodeContainerInventory(block);
+        ContainerBlockEntityCapture capture = effects.encodeContainerInventory(block);
         if (capture.isEmpty()) {
             return;
         }

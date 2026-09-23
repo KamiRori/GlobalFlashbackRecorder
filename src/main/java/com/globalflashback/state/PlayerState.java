@@ -3,6 +3,7 @@ package com.globalflashback.state;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.io.Serializable;
 
 /**
  * Immutable player state for Global Replay (server-authoritative).
@@ -37,7 +38,7 @@ public record PlayerState(
         MetadataBlob metadata,
         String profileName,
         MetadataBlob profilePropertiesPayload
-) {
+) implements Serializable {
     public static final List<ReplayItemStack> EMPTY_HOTBAR = List.of(
             ReplayItemStack.EMPTY, ReplayItemStack.EMPTY, ReplayItemStack.EMPTY,
             ReplayItemStack.EMPTY, ReplayItemStack.EMPTY, ReplayItemStack.EMPTY,
@@ -85,7 +86,7 @@ public record PlayerState(
         return List.of(slots);
     }
 
-    public record PotionEffectState(String effectId, int amplifier, int durationTicks, boolean ambient, boolean particles) {
+    public record PotionEffectState(String effectId, int amplifier, int durationTicks, boolean ambient, boolean particles) implements Serializable {
         public PotionEffectState {
             Objects.requireNonNull(effectId, "effectId");
         }

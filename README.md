@@ -1,8 +1,8 @@
 # Global Flashback Recorder
 
-Paper **26.2** 服务端全局 Replay 插件：在服务器上录制一场 Event 的世界状态，导出为可被 [Flashback](https://github.com/Moulberry/Flashback) 打开的 `.zip` 回放。
+Paper 服务端全局 Replay 插件：在服务器上录制一场 Event 的世界状态，导出为可被 [Flashback](https://github.com/Moulberry/Flashback) 打开的 `.zip` 回放。
 
-一个 Event → 一个 Replay。打开后可自由切换观察任意玩家 / 实体 / 镜头，无需每人各录一份客户端录像。
+支持构建目标：**Paper 26.2**（SPEC / 默认）与 **Paper 1.21.11**（适配线）。一个 Event → 一个 Replay。打开后可自由切换观察任意玩家 / 实体 / 镜头。
 
 权威策划与约束见 [`SPEC.md`](SPEC.md)、[`AGENTS.md`](AGENTS.md)。
 
@@ -54,28 +54,40 @@ Paper **26.2** 服务端全局 Replay 插件：在服务器上录制一场 Event
 
 ## 环境要求
 
-| 项目 | 要求 |
-|------|------|
-| 服务端 | **Paper 26.2**（与录制协议版本一致） |
-| JDK | **25**（构建与运行） |
-| 播放端 | 同版本 Minecraft + Flashback；**26.2 录制的包不能用旧版 Flashback / 旧协议打开** |
+| 项目 | Paper **26.2**（默认） | Paper **1.21.11** |
+|------|------------------------|-------------------|
+| 服务端 | Paper 26.2 | Paper 1.21.11 |
+| JDK | **25** | **21** |
+| 播放端 | 同版本 MC + Flashback | 同版本 MC + Flashback |
 
-产物为 Flashback 识别的 **`.zip`**（内含 `metadata.json` + `cN.flashback`）。
+录制与播放的 **Minecraft 协议版本必须一致**；26.2 录的包不能用 1.21.x Flashback 打开，反之亦然。
+
+产物为 Flashback 识别的 **`.zip`**（内含 `metadata.json` + `cN.flashback`）。每个构建目标产出**独立 jar**（见下方）。
 
 ---
 
 ## 构建
 
+默认构建 **Paper 26.2**：
+
 ```bash
 ./gradlew build
 ```
 
-插件 jar 输出在 `build/libs/`（版本见 `build.gradle.kts`）。
+构建 **Paper 1.21.11** 适配（PowerShell 请给属性加引号）：
 
-本地试跑（需同意 EULA 等）：
+```bash
+./gradlew build "-Pgfr.mc=1.21.11"
+```
+
+插件 jar 在 `build/libs/`，文件名带 appendix：`…-26.2.jar` 或 `…-1.21.11.jar`。切换 `-Pgfr.mc` 时 Gradle 会自动清掉 paperweight 的 `mappedServerJar` 缓存，避免混用。
+
+本地试跑：
 
 ```bash
 ./gradlew runServer
+# 或
+./gradlew runServer "-Pgfr.mc=1.21.11"
 ```
 
 ---
@@ -89,10 +101,10 @@ Paper **26.2** 服务端全局 Replay 插件：在服务器上录制一场 Event
 |------|------|
 | `/gfr record start [name] [keyframeIntervalTicks] [chunkRadius]` | 开始录制 |
 | `/gfr record status` | 当前状态 |
-| `/gfr record stop` | 停止并编码（**须由游戏内玩家执行**，该玩家作为相机 ego） |
+| `/gfr record stop` | 停止录制（默认下一 tick 再写 `.zip`，完成后私聊路径） |
 | `/gfr poc` / `/gfr capture` | 开发 / 调试用子命令 |
 
-默认：`keyframeIntervalTicks = 100`，`chunkRadius = 8`（仅跟踪玩家附近**已加载** Chunk）。
+默认：`keyframeIntervalTicks = 100`，`chunkRadius = 8`（玩家周围**圆形**半径内、仅**已加载** Chunk）。
 
 停止后会在插件数据目录写出 Flashback `.zip`，控制台 / 消息中会打印路径。
 
@@ -134,3 +146,4 @@ NMS 版本相关代码隔离在 `nms/v26_2/`。更细的性能结论见 [`docs/p
 | [`docs/outbound-packet-capture.md`](docs/outbound-packet-capture.md) | 出站捕获跳过 API |
 | [`docs/replay-effect-ingress.md`](docs/replay-effect-ingress.md) | 仅回放写入的效果入口 |
 | [`docs/performance-audit.md`](docs/performance-audit.md) | 性能审计笔记 |
+| [`docs/main-thread-hotspots.md`](docs/main-thread-hotspots.md) | 多人主线程热点清单（待分批修复） |

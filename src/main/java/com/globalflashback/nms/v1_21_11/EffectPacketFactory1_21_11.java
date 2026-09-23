@@ -1,4 +1,4 @@
-package com.globalflashback.nms.v26_2;
+package com.globalflashback.nms.v1_21_11;
 
 import com.globalflashback.nms.ContainerBlockEntityCapture;
 import com.globalflashback.nms.EffectPacketEncoder;
@@ -37,7 +37,7 @@ import org.bukkit.entity.Player;
 /**
  * Encodes ephemeral effect / block / animation packets on the main thread at capture time.
  */
-public final class EffectPacketFactory26_2 implements EffectPacketEncoder {
+public final class EffectPacketFactory1_21_11 implements EffectPacketEncoder {
     private ProtocolInfo<ClientGamePacketListener> cachedProtocolInfo;
     private net.minecraft.core.RegistryAccess cachedRegistryAccess;
 
@@ -70,7 +70,7 @@ public final class EffectPacketFactory26_2 implements EffectPacketEncoder {
         if (!(block instanceof CraftBlock craft)) {
             return MetadataBlob.EMPTY;
         }
-        BlockState state = craft.getBlockState();
+        BlockState state = craft.getNMS();
         BlockPos pos = craft.getPosition();
         ServerPlayer encoder = encoderPlayer(craft);
         if (encoder == null) {
@@ -89,7 +89,7 @@ public final class EffectPacketFactory26_2 implements EffectPacketEncoder {
         if (!(block instanceof CraftBlock craft)) {
             return ContainerBlockEntityCapture.EMPTY;
         }
-        if (!(craft.getLevel() instanceof ServerLevel level)) {
+        if (!(craft.getHandle() instanceof ServerLevel level)) {
             return ContainerBlockEntityCapture.EMPTY;
         }
         BlockPos pos = craft.getPosition();
@@ -123,7 +123,7 @@ public final class EffectPacketFactory26_2 implements EffectPacketEncoder {
         if (!(block instanceof CraftBlock craft)) {
             return MetadataBlob.EMPTY;
         }
-        BlockState state = craft.getBlockState();
+        BlockState state = craft.getNMS();
         BlockPos pos = craft.getPosition();
         ServerPlayer encoder = encoderPlayer(craft);
         if (encoder == null) {
@@ -148,7 +148,7 @@ public final class EffectPacketFactory26_2 implements EffectPacketEncoder {
         if (!(block instanceof CraftBlock craft)) {
             return MetadataBlob.EMPTY;
         }
-        BlockState state = craft.getBlockState();
+        BlockState state = craft.getNMS();
         BlockPos pos = craft.getPosition();
         ServerPlayer encoder = encoderPlayer(craft);
         if (encoder == null) {
@@ -174,7 +174,7 @@ public final class EffectPacketFactory26_2 implements EffectPacketEncoder {
     }
 
     private static ServerPlayer encoderPlayer(CraftBlock craft) {
-        if (craft.getLevel() instanceof net.minecraft.server.level.ServerLevel level) {
+        if (craft.getHandle() instanceof net.minecraft.server.level.ServerLevel level) {
             ServerPlayer any = level.getRandomPlayer();
             if (any != null) {
                 return any;

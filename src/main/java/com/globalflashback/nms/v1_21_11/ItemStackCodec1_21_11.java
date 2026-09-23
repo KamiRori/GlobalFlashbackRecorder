@@ -1,4 +1,4 @@
-package com.globalflashback.nms.v26_2;
+package com.globalflashback.nms.v1_21_11;
 
 import com.globalflashback.state.ReplayItemStack;
 import io.netty.buffer.ByteBuf;
@@ -18,10 +18,10 @@ import net.minecraft.world.item.ItemStack;
  * reuse via {@link ItemStack#hashItemAndComponents(ItemStack)}). Static helpers remain for encode
  * paths that do not own an adapter instance.
  */
-public final class ItemStackCodec26_2 {
+public final class ItemStackCodec1_21_11 {
     private final ByteBuf encodeScratch = Unpooled.buffer(256);
 
-    public ItemStackCodec26_2() {}
+    public ItemStackCodec1_21_11() {}
 
     /**
      * Capture-side encode with reuse: when item id / count / component hash match {@code previous},
