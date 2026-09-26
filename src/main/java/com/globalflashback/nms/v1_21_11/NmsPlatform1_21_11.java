@@ -1,6 +1,8 @@
 package com.globalflashback.nms.v1_21_11;
 
 import com.globalflashback.capture.RecordingSideChannel;
+import com.globalflashback.motion.ClientPoseArrivalStamps;
+import com.globalflashback.nms.ClientPoseArrivalTap;
 import com.globalflashback.nms.EffectOutboundTap;
 import com.globalflashback.nms.EffectPacketEncoder;
 import com.globalflashback.nms.NmsAdapter;
@@ -44,14 +46,19 @@ public final class NmsPlatform1_21_11 implements NmsPlatform {
     }
 
     @Override
-    public ReplayEncodeJob prepareEncodeJob(ReplayDocument document, Player camera, Path outputFile) {
+    public ReplayEncodeJob prepareEncodeJob(
+            ReplayDocument document,
+            Player camera,
+            Path outputFile,
+            com.globalflashback.motion.format.ClientPoseStore.WrittenMotion clientPose
+    ) {
         Objects.requireNonNull(document, "document");
         Objects.requireNonNull(camera, "camera");
         Objects.requireNonNull(outputFile, "outputFile");
         StateActionEncoder encoder = new StateActionEncoder1_21_11();
         StateActionEncoder.Session session = encoder.openSession(camera);
         FlashbackEncoder flashback = new FlashbackEncoder();
-        return () -> flashback.encode(document, session, outputFile);
+        return () -> flashback.encode(document, session, outputFile, clientPose);
     }
 
     @Override
@@ -62,5 +69,10 @@ public final class NmsPlatform1_21_11 implements NmsPlatform {
     @Override
     public EffectOutboundTap createEffectTap(Plugin plugin, RecordingSideChannel sideChannel) {
         return new EffectOutboundTap1_21_11(plugin, sideChannel);
+    }
+
+    @Override
+    public ClientPoseArrivalTap createClientPoseArrivalTap(Plugin plugin, ClientPoseArrivalStamps stamps) {
+        return new ClientPoseArrivalTap1_21_11(plugin, stamps);
     }
 }

@@ -42,6 +42,7 @@ import net.minecraft.network.protocol.game.ClientboundSetBorderCenterPacket;
 import net.minecraft.network.protocol.game.ClientboundSetBorderLerpSizePacket;
 import net.minecraft.network.protocol.game.ClientboundSetBorderSizePacket;
 import net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket;
+import net.minecraft.network.protocol.game.ClientboundSetHealthPacket;
 import net.minecraft.network.protocol.game.ClientboundSetHeldSlotPacket;
 import net.minecraft.network.protocol.game.ClientboundSetPassengersPacket;
 import net.minecraft.network.protocol.game.GameProtocols;
@@ -107,6 +108,10 @@ public final class StateActionEncoder1_21_11 implements StateActionEncoder {
     private UUID lastHotbarPlayer;
     private int lastHotbarSelected = Integer.MIN_VALUE;
     private List<ReplayItemStack> lastHotbarItems = List.of();
+
+    private final Map<UUID, Float> lastEmittedHealth = new HashMap<>();
+    private final Map<UUID, Integer> lastEmittedFood = new HashMap<>();
+    private final Map<UUID, Float> lastEmittedSaturation = new HashMap<>();
 
     /** passenger entity id → vehicle entity id */
     private final Map<Integer, Integer> entityToVehicle = new HashMap<>();
@@ -196,6 +201,7 @@ public final class StateActionEncoder1_21_11 implements StateActionEncoder {
             lastHotbarPlayer = null;
             lastHotbarSelected = Integer.MIN_VALUE;
             lastHotbarItems = List.of();
+            clearVitalsTracking();
             clearMountTracking();
 
             List<ReplayAction> actions = new ArrayList<>(bootstrap);
@@ -207,7 +213,9 @@ public final class StateActionEncoder1_21_11 implements StateActionEncoder {
             PlayerState ego = snapshot.players().get(cameraUuid);
             if (ego != null) {
                 actions.addAll(encodePlayerHotbar(ego));
+                actions.addAll(encodeCameraHealthIfChanged(ego));
             }
+            seedVitalsTracking(snapshot);
             seedTracking(snapshot, cameraUuid);
             return actions;
         } finally {
@@ -307,9 +315,17 @@ public final class StateActionEncoder1_21_11 implements StateActionEncoder {
                 boolean isCamera = player.uuid().equals(cameraUuid);
                 boolean firstSeen = knownPlayers.add(player.uuid());
                 knownEntities.add(player.entityId());
+                Float previousHealth = lastEmittedHealth.get(player.uuid());
+                boolean respawned = previousHealth != null
+                        && previousHealth <= 0.0f
+                        && player.health() > 0.0f;
 
                 if (!isCamera && firstSeen) {
                     out.addAll(encodePlayerInfoEntries(List.of(player)));
+                    out.addAll(encodeEntitySpawn(toEntity(player)));
+                } else if (!isCamera && respawned) {
+                    out.add(ReplayAction.gamePacket(
+                            encode(new ClientboundRemoveEntitiesPacket(player.entityId()))));
                     out.addAll(encodeEntitySpawn(toEntity(player)));
                 }
                 moved.add(poseOf(player));
@@ -317,7 +333,9 @@ public final class StateActionEncoder1_21_11 implements StateActionEncoder {
                 out.addAll(encodeEquipment(player.entityId(), player.equipment()));
                 if (isCamera) {
                     out.addAll(encodePlayerHotbar(player));
+                    out.addAll(encodeCameraHealthIfChanged(player));
                 }
+                rememberVitals(player);
                 noteMountState(player.entityId(), player.vehicleEntityId(), player.passengerEntityIds());
             }
             case StateChange.PlayerRemove(UUID uuid, int entityId) -> {
@@ -792,6 +810,43 @@ public final class StateActionEncoder1_21_11 implements StateActionEncoder {
         appendPayload(actions, entity.metadata());
         actions.addAll(encodeEquipment(entity.entityId(), entity.equipment()));
         return actions;
+    }
+
+    private void clearVitalsTracking() {
+        lastEmittedHealth.clear();
+        lastEmittedFood.clear();
+        lastEmittedSaturation.clear();
+    }
+
+    private void seedVitalsTracking(GlobalSnapshot snapshot) {
+        for (PlayerState player : snapshot.players().values()) {
+            rememberVitals(player);
+        }
+    }
+
+    private void rememberVitals(PlayerState player) {
+        lastEmittedHealth.put(player.uuid(), player.health());
+        lastEmittedFood.put(player.uuid(), player.foodLevel());
+        lastEmittedSaturation.put(player.uuid(), player.saturation());
+    }
+
+    private List<ReplayAction> encodeCameraHealthIfChanged(PlayerState player) {
+        Float prevH = lastEmittedHealth.get(player.uuid());
+        Integer prevF = lastEmittedFood.get(player.uuid());
+        Float prevS = lastEmittedSaturation.get(player.uuid());
+        if (prevH != null
+                && Float.compare(prevH, player.health()) == 0
+                && prevF != null
+                && prevF == player.foodLevel()
+                && prevS != null
+                && Float.compare(prevS, player.saturation()) == 0) {
+            return List.of();
+        }
+        return List.of(ReplayAction.gamePacket(encode(new ClientboundSetHealthPacket(
+                player.health(),
+                player.foodLevel(),
+                player.saturation()
+        ))));
     }
 
     /**

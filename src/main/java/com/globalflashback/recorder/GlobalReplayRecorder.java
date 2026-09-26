@@ -11,6 +11,10 @@ import com.globalflashback.delta.Keyframe;
 import com.globalflashback.delta.SnapshotApplier;
 import com.globalflashback.delta.SnapshotDiffer;
 import com.globalflashback.delta.StateChange;
+import com.globalflashback.event.GameplayEventListeners;
+import com.globalflashback.motion.ClientPoseArrivalStamps;
+import com.globalflashback.motion.ClientPoseBridge;
+import com.globalflashback.motion.format.ClientPoseStore;
 import com.globalflashback.nms.EffectOutboundTap;
 import com.globalflashback.nms.NmsPlatform;
 import com.globalflashback.replay.AsyncDeltaPipeline;
@@ -50,8 +54,10 @@ public final class GlobalReplayRecorder {
     private final Logger logger;
     private final RecordingSideChannel sideChannel = new RecordingSideChannel();
     private final RecordingListeners listeners;
+    private final GameplayEventListeners gameplayEvents;
     private final SwingSampler swingSampler;
     private final EffectOutboundTap effectTap;
+    private final ClientPoseBridge clientPoseBridge;
     private final ExecutorService encodeExecutor;
 
     private Session session;
@@ -64,7 +70,15 @@ public final class GlobalReplayRecorder {
         this.effectTap = platform.createEffectTap(plugin, sideChannel);
         this.listeners = new RecordingListeners(
                 plugin, sideChannel, capture.dirtyChunks(), platform.effects(), effectTap);
+        this.gameplayEvents = new GameplayEventListeners(plugin, this::isRecording);
         this.swingSampler = new SwingSampler(sideChannel, platform.effects());
+        ClientPoseArrivalStamps arrivalStamps = new ClientPoseArrivalStamps();
+        this.clientPoseBridge = new ClientPoseBridge(
+                plugin,
+                arrivalStamps,
+                platform.createClientPoseArrivalTap(plugin, arrivalStamps)
+        );
+        this.clientPoseBridge.register();
         this.encodeExecutor = Executors.newSingleThreadExecutor(encodeThreadFactory());
     }
 
@@ -121,9 +135,13 @@ public final class GlobalReplayRecorder {
         sideChannel.clear();
         swingSampler.clear();
         listeners.register();
+        gameplayEvents.bind(started.document::addEvent, tick);
+        gameplayEvents.register();
         effectTap.start();
         ReplayEffectIngress.bind((ingressTick, payload) ->
                 sideChannel.offer(ingressTick, new StateChange.EffectPacket(new MetadataBlob(payload))));
+
+        clientPoseBridge.beginRecording(metadata.replayId(), tick);
 
         logger.info("Recording started name=" + name
                 + " tick=" + tick
@@ -158,6 +176,7 @@ public final class GlobalReplayRecorder {
             ending.task.cancel();
         }
         listeners.unregister();
+        gameplayEvents.unregister();
         effectTap.stop();
         ReplayEffectIngress.unbind();
         swingSampler.clear();
@@ -183,6 +202,16 @@ public final class GlobalReplayRecorder {
         }
 
         ReplayDocument document = ending.document.build();
+        logger.info("Gameplay events recorded=" + document.events().size());
+
+        ClientPoseStore poseStore = clientPoseBridge.endRecording();
+        ClientPoseStore.WrittenMotion clientPose = null;
+        if (poseStore != null) {
+            clientPose = poseStore.write();
+            if (clientPose != null) {
+                logger.info("Client pose samples=" + poseStore.totalSamples());
+            }
+        }
 
         boolean seekOk = false;
         if (ending.options.verifySeekOnStop()) {
@@ -193,7 +222,7 @@ public final class GlobalReplayRecorder {
                 .resolve(sanitize(ending.name) + ".zip");
 
         // Prepare on main thread (bootstrap + RegistryAccess), then encode off-thread when deferred.
-        ReplayEncodeJob job = platform.prepareEncodeJob(document, camera, outFile);
+        ReplayEncodeJob job = platform.prepareEncodeJob(document, camera, outFile, clientPose);
         UUID cameraId = camera.getUniqueId();
         String recName = ending.name;
         AsyncDeltaPipeline spillToDelete = ending.deltaPipeline;
@@ -247,8 +276,10 @@ public final class GlobalReplayRecorder {
             ending.task.cancel();
         }
         listeners.unregister();
+        gameplayEvents.unregister();
         effectTap.stop();
         ReplayEffectIngress.unbind();
+        clientPoseBridge.endRecording();
         swingSampler.clear();
         sideChannel.clear();
         if (ending.deltaPipeline != null) {
@@ -262,6 +293,7 @@ public final class GlobalReplayRecorder {
      * Shuts down the encode worker. Call from plugin {@code onDisable}.
      */
     public void shutdown() {
+        clientPoseBridge.unregister();
         encodeExecutor.shutdown();
         try {
             if (!encodeExecutor.awaitTermination(30, TimeUnit.SECONDS)) {

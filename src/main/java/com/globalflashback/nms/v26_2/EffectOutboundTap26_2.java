@@ -150,8 +150,22 @@ public final class EffectOutboundTap26_2 implements Listener, EffectOutboundTap 
         ServerPlayer sp = craft.getHandle();
         Channel channel = sp.connection.connection.channel;
         channel.eventLoop().execute(() -> {
-            if (channel.pipeline().get(HANDLER_NAME) == null) {
-                channel.pipeline().addBefore("packet_handler", HANDLER_NAME, new TapHandler(sp));
+            try {
+                if (channel.pipeline().get(HANDLER_NAME) != null) {
+                    return;
+                }
+                // ViaFabricPlus / proxies may alter the pipeline; never throw out of the event loop.
+                if (channel.pipeline().get("packet_handler") != null) {
+                    channel.pipeline().addBefore("packet_handler", HANDLER_NAME, new TapHandler(sp));
+                } else {
+                    channel.pipeline().addFirst(HANDLER_NAME, new TapHandler(sp));
+                    plugin.getLogger().warning("gfr_effect_tap: packet_handler missing for "
+                            + player.getName() + "; attached at pipeline head");
+                }
+            } catch (Throwable t) {
+                attached.remove(player.getUniqueId());
+                plugin.getLogger().warning("gfr_effect_tap attach failed for "
+                        + player.getName() + ": " + t);
             }
         });
     }
@@ -163,8 +177,13 @@ public final class EffectOutboundTap26_2 implements Listener, EffectOutboundTap 
         }
         Channel channel = craft.getHandle().connection.connection.channel;
         channel.eventLoop().execute(() -> {
-            if (channel.pipeline().get(HANDLER_NAME) != null) {
-                channel.pipeline().remove(HANDLER_NAME);
+            try {
+                if (channel.pipeline().get(HANDLER_NAME) != null) {
+                    channel.pipeline().remove(HANDLER_NAME);
+                }
+            } catch (Throwable t) {
+                plugin.getLogger().warning("gfr_effect_tap detach failed for "
+                        + player.getName() + ": " + t);
             }
         });
     }

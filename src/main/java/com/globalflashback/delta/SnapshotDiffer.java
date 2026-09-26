@@ -38,6 +38,10 @@ public final class SnapshotDiffer {
 
         List<StateChange> changes = null;
         changes = diffWorlds(previous.worlds(), current.worlds(), changes);
+        // Flashback applies ClientboundRespawn before LevelChunkWithLight for the new dimension.
+        // Emit DimensionChange ahead of ChunkUpsert so the encoder can write Respawn first.
+        changes = diffPlayerDimensionChanges(previous.players(), current.players(), changes);
+        changes = diffEntityDimensionChanges(previous.entities(), current.entities(), changes);
         changes = diffChunks(previous.chunks(), current.chunks(), changes);
         changes = diffPlayers(previous.players(), current.players(), changes);
         changes = diffEntities(previous.entities(), current.entities(), changes);
@@ -116,6 +120,49 @@ public final class SnapshotDiffer {
         return out;
     }
 
+    private static List<StateChange> diffPlayerDimensionChanges(
+            Map<UUID, PlayerState> previous,
+            Map<UUID, PlayerState> current,
+            List<StateChange> out
+    ) {
+        for (Map.Entry<UUID, PlayerState> entry : current.entrySet()) {
+            PlayerState after = entry.getValue();
+            PlayerState before = previous.get(entry.getKey());
+            if (before == null || before == after) {
+                continue;
+            }
+            if (!before.dimension().equals(after.dimension())) {
+                out = ensure(out);
+                out.add(new StateChange.DimensionChange(
+                        after.uuid(), after.entityId(), before.dimension(), after.dimension()));
+            }
+        }
+        return out;
+    }
+
+    private static List<StateChange> diffEntityDimensionChanges(
+            Map<Integer, EntityState> previous,
+            Map<Integer, EntityState> current,
+            List<StateChange> out
+    ) {
+        for (Map.Entry<Integer, EntityState> entry : current.entrySet()) {
+            EntityState after = entry.getValue();
+            if ("minecraft:player".equals(after.entityType())) {
+                continue;
+            }
+            EntityState before = previous.get(entry.getKey());
+            if (before == null || before == after) {
+                continue;
+            }
+            if (!before.dimension().equals(after.dimension())) {
+                out = ensure(out);
+                out.add(new StateChange.DimensionChange(
+                        after.uuid(), after.entityId(), before.dimension(), after.dimension()));
+            }
+        }
+        return out;
+    }
+
     private static List<StateChange> diffPlayers(
             Map<UUID, PlayerState> previous,
             Map<UUID, PlayerState> current,
@@ -132,11 +179,7 @@ public final class SnapshotDiffer {
             if (before == after) {
                 continue;
             }
-            if (!before.dimension().equals(after.dimension())) {
-                out = ensure(out);
-                out.add(new StateChange.DimensionChange(
-                        after.uuid(), after.entityId(), before.dimension(), after.dimension()));
-            }
+            // DimensionChange already emitted in diffPlayerDimensionChanges.
             if (!before.equals(after)) {
                 out = ensure(out);
                 out.add(new StateChange.PlayerUpsert(after));
@@ -172,11 +215,7 @@ public final class SnapshotDiffer {
             if (before == after) {
                 continue;
             }
-            if (!before.dimension().equals(after.dimension())) {
-                out = ensure(out);
-                out.add(new StateChange.DimensionChange(
-                        after.uuid(), after.entityId(), before.dimension(), after.dimension()));
-            }
+            // DimensionChange already emitted in diffEntityDimensionChanges.
             if (!before.equals(after)) {
                 out = ensure(out);
                 out.add(new StateChange.EntityUpdate(after));

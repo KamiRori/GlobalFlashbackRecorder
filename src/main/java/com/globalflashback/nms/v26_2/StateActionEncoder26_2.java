@@ -23,8 +23,11 @@ import com.google.common.collect.Multimap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import net.minecraft.core.Holder;
+import net.minecraft.core.Registry;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.ProtocolInfo;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -38,21 +41,28 @@ import net.minecraft.network.protocol.game.ClientboundInitializeBorderPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoRemovePacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
+import net.minecraft.network.protocol.game.ClientboundRespawnPacket;
 import net.minecraft.network.protocol.game.ClientboundSetBorderCenterPacket;
 import net.minecraft.network.protocol.game.ClientboundSetBorderLerpSizePacket;
 import net.minecraft.network.protocol.game.ClientboundSetBorderSizePacket;
 import net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket;
+import net.minecraft.network.protocol.game.ClientboundSetHealthPacket;
 import net.minecraft.network.protocol.game.ClientboundSetHeldSlotPacket;
 import net.minecraft.network.protocol.game.ClientboundSetPassengersPacket;
+import net.minecraft.network.protocol.game.CommonPlayerSpawnInfo;
 import net.minecraft.network.protocol.game.GameProtocols;
 import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.border.WorldBorder;
+import net.minecraft.world.level.dimension.DimensionType;
+import net.minecraft.world.level.dimension.LevelStem;
 import net.minecraft.world.phys.Vec3;
 import org.bukkit.craftbukkit.entity.CraftPlayer;
 import org.bukkit.entity.Player;
@@ -70,6 +80,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -96,6 +107,15 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
     private final Map<Integer, MoveEntitiesCodec.Pose> lastPoses = new HashMap<>();
     /** Chunks that already had a LevelChunkWithLightPacket written into the replay stream. */
     private final Set<Long> knownChunkKeys = new HashSet<>();
+    /**
+     * Flashback ReplayServer is single-dimension: only emit LevelChunkWithLight / border for the
+     * ego camera's current dimension (updated on {@link StateChange.DimensionChange}).
+     */
+    private DimensionId cameraDimension;
+    /** Latest WorldState per dimension (sea level / border for Respawn). */
+    private final Map<DimensionId, WorldState> lastWorlds = new HashMap<>();
+    /** Latest PlayerState for ego (game mode for Respawn). */
+    private PlayerState lastCameraPlayer;
 
     /**
      * Last encoded world-border geometry per dimension.
@@ -107,6 +127,15 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
     private UUID lastHotbarPlayer;
     private int lastHotbarSelected = Integer.MIN_VALUE;
     private List<ReplayItemStack> lastHotbarItems = List.of();
+
+    /**
+     * Last encoded health per player UUID. Used to (1) emit {@link ClientboundSetHealthPacket} for
+     * the ego (Flashback applies it only to {@code localPlayerId}) and (2) detect respawn so remote
+     * players can be remove+re-spawned, clearing client {@code deathTime}/{@code dead}.
+     */
+    private final Map<UUID, Float> lastEmittedHealth = new HashMap<>();
+    private final Map<UUID, Integer> lastEmittedFood = new HashMap<>();
+    private final Map<UUID, Float> lastEmittedSaturation = new HashMap<>();
 
     /** passenger entity id → vehicle entity id */
     private final Map<Integer, Integer> entityToVehicle = new HashMap<>();
@@ -193,10 +222,17 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
             lastPoses.clear();
             knownChunkKeys.clear();
             lastBorders.clear();
+            lastWorlds.clear();
+            lastWorlds.putAll(snapshot.worlds());
             lastHotbarPlayer = null;
             lastHotbarSelected = Integer.MIN_VALUE;
             lastHotbarItems = List.of();
+            clearVitalsTracking();
             clearMountTracking();
+
+            PlayerState ego = snapshot.players().get(cameraUuid);
+            lastCameraPlayer = ego;
+            cameraDimension = ego != null ? ego.dimension() : null;
 
             List<ReplayAction> actions = new ArrayList<>(bootstrap);
             actions.addAll(encodePlayerInfo(snapshot));
@@ -204,10 +240,11 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
             actions.addAll(encodeChunks(snapshot));
             actions.addAll(encodeEntities(snapshot, cameraUuid));
             actions.addAll(encodeMountsFromSnapshot(snapshot));
-            PlayerState ego = snapshot.players().get(cameraUuid);
             if (ego != null) {
                 actions.addAll(encodePlayerHotbar(ego));
+                actions.addAll(encodeCameraHealthIfChanged(ego));
             }
+            seedVitalsTracking(snapshot);
             seedTracking(snapshot, cameraUuid);
             return actions;
         } finally {
@@ -227,7 +264,20 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
             List<MoveEntitiesCodec.Pose> moved = new ArrayList<>();
             dirtyVehicles.clear();
 
+            // Pass 1: camera DimensionChange → ClientboundRespawn before any new-dim chunks.
             for (StateChange change : changes) {
+                if (change instanceof StateChange.DimensionChange dim
+                        && dim.entityUuid().equals(cameraUuid)) {
+                    encodeCameraDimensionChange(dim, changes, actions);
+                }
+            }
+
+            // Pass 2: remaining changes (skip camera DimensionChange already handled).
+            for (StateChange change : changes) {
+                if (change instanceof StateChange.DimensionChange dim
+                        && dim.entityUuid().equals(cameraUuid)) {
+                    continue;
+                }
                 encodeChange(cameraUuid, change, actions, moved);
             }
 
@@ -287,29 +337,71 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
                 // Only emit LevelChunkWithLight for chunks not yet present in the stream.
                 // BE update tags are already embedded in that packet — mid-stream BE edits use
                 // BlockEntityChange / outbound BlockEntityData tap instead.
+                if (cameraDimension != null && !cameraDimension.equals(chunk.dimension())) {
+                    return;
+                }
                 long key = chunkStreamKey(chunk);
                 if (knownChunkKeys.add(key)) {
                     appendPayload(out, chunk.blockAndLightPayload());
                 }
             }
             case StateChange.ChunkUnload ignored -> { }
-            case StateChange.WorldUpsert(WorldState world) -> encodeWorldUpsert(world, out);
+            case StateChange.WorldUpsert(WorldState world) -> {
+                lastWorlds.put(world.dimension(), world);
+                encodeWorldUpsert(world, out);
+            }
             case StateChange.BlockChange(
-                    var ignoredDim, var ignoredPos, var ignoredOld, var ignoredNew, MetadataBlob payload
-            ) -> appendPayload(out, payload);
+                    var blockDim, var ignoredPos, var ignoredOld, var ignoredNew, MetadataBlob payload
+            ) -> {
+                if (cameraDimension != null && !cameraDimension.equals(blockDim)) {
+                    return;
+                }
+                appendPayload(out, payload);
+            }
             case StateChange.BlockEntityChange(
-                    var ignoredDim, var ignoredPos, var ignoredType, MetadataBlob nbtPayload
-            ) -> appendPayload(out, nbtPayload);
+                    var beDim, var ignoredPos, var ignoredType, MetadataBlob nbtPayload
+            ) -> {
+                if (cameraDimension != null && !cameraDimension.equals(beDim)) {
+                    return;
+                }
+                appendPayload(out, nbtPayload);
+            }
             case StateChange.EntityAnimate(int ignoredId, int ignoredAction, MetadataBlob payload) ->
                     appendPayload(out, payload);
             case StateChange.EffectPacket(MetadataBlob payload) -> appendPayload(out, payload);
             case StateChange.PlayerUpsert(PlayerState player) -> {
+                if (player.uuid().equals(cameraUuid)) {
+                    lastCameraPlayer = player;
+                    if (cameraDimension == null) {
+                        cameraDimension = player.dimension();
+                    }
+                }
+                // Outside the ego dimension: Flashback single-world cannot show them.
+                if (cameraDimension != null && !cameraDimension.equals(player.dimension())) {
+                    if (knownEntities.remove(player.entityId())) {
+                        lastPoses.remove(player.entityId());
+                        noteMountState(player.entityId(), null, List.of());
+                        out.add(ReplayAction.gamePacket(
+                                encode(new ClientboundRemoveEntitiesPacket(player.entityId()))));
+                    }
+                    knownPlayers.remove(player.uuid());
+                    return;
+                }
                 boolean isCamera = player.uuid().equals(cameraUuid);
                 boolean firstSeen = knownPlayers.add(player.uuid());
                 knownEntities.add(player.entityId());
+                Float previousHealth = lastEmittedHealth.get(player.uuid());
+                boolean respawned = previousHealth != null
+                        && previousHealth <= 0.0f
+                        && player.health() > 0.0f;
 
                 if (!isCamera && firstSeen) {
                     out.addAll(encodePlayerInfoEntries(List.of(player)));
+                    out.addAll(encodeEntitySpawn(toEntity(player)));
+                } else if (!isCamera && respawned) {
+                    // Same entityId keeps client deathTime/dead; recreate so the mesh leaves death pose.
+                    out.add(ReplayAction.gamePacket(
+                            encode(new ClientboundRemoveEntitiesPacket(player.entityId()))));
                     out.addAll(encodeEntitySpawn(toEntity(player)));
                 }
                 moved.add(poseOf(player));
@@ -317,7 +409,9 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
                 out.addAll(encodeEquipment(player.entityId(), player.equipment()));
                 if (isCamera) {
                     out.addAll(encodePlayerHotbar(player));
+                    out.addAll(encodeCameraHealthIfChanged(player));
                 }
+                rememberVitals(player);
                 noteMountState(player.entityId(), player.vehicleEntityId(), player.passengerEntityIds());
             }
             case StateChange.PlayerRemove(UUID uuid, int entityId) -> {
@@ -334,6 +428,9 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
                 if (entity.uuid().equals(cameraUuid)) {
                     return;
                 }
+                if (cameraDimension != null && !cameraDimension.equals(entity.dimension())) {
+                    return;
+                }
                 if (knownEntities.add(entity.entityId())) {
                     out.addAll(encodeEntitySpawn(entity));
                 }
@@ -341,6 +438,15 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
                 noteMountState(entity.entityId(), entity.vehicleEntityId(), entity.passengerEntityIds());
             }
             case StateChange.EntityUpdate(EntityState entity) -> {
+                if (cameraDimension != null && !cameraDimension.equals(entity.dimension())) {
+                    if (knownEntities.remove(entity.entityId())) {
+                        lastPoses.remove(entity.entityId());
+                        noteMountState(entity.entityId(), null, List.of());
+                        out.add(ReplayAction.gamePacket(
+                                encode(new ClientboundRemoveEntitiesPacket(entity.entityId()))));
+                    }
+                    return;
+                }
                 knownEntities.add(entity.entityId());
                 moved.add(poseOf(entity));
                 appendPayload(out, entity.metadata());
@@ -356,8 +462,131 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
                     out.add(ReplayAction.gamePacket(encode(new ClientboundRemoveEntitiesPacket(entityId))));
                 }
             }
-            case StateChange.DimensionChange ignored -> { }
+            case StateChange.DimensionChange(
+                    UUID entityUuid, int entityId, DimensionId ignoredFrom, DimensionId ignoredTo
+            ) -> {
+                // Camera DimensionChange is handled in pass 1 (Respawn).
+                // Other entities leaving/entering: drop from the single Flashback world.
+                if (!entityUuid.equals(cameraUuid)) {
+                    knownPlayers.remove(entityUuid);
+                    knownEntities.remove(entityId);
+                    lastPoses.remove(entityId);
+                    noteMountState(entityId, null, List.of());
+                    out.add(ReplayAction.gamePacket(encode(new ClientboundRemoveEntitiesPacket(entityId))));
+                }
+            }
         }
+    }
+
+    /**
+     * Ego entered another dimension: emit {@link ClientboundRespawnPacket} so Flashback
+     * {@code ensureWorldCreated} switches ServerLevel before any new-dim chunk packets.
+     */
+    private void encodeCameraDimensionChange(
+            StateChange.DimensionChange change,
+            List<StateChange> batch,
+            List<ReplayAction> out
+    ) {
+        DimensionId to = change.to();
+        WorldState world = findWorldState(to, batch);
+        GameType gameType = GameType.SURVIVAL;
+        PlayerState egoHint = findCameraPlayerInBatch(change.entityUuid(), batch);
+        if (egoHint != null) {
+            lastCameraPlayer = egoHint;
+            gameType = GameType.byName(egoHint.gameMode().toLowerCase(), GameType.SURVIVAL);
+        } else if (lastCameraPlayer != null) {
+            gameType = GameType.byName(lastCameraPlayer.gameMode().toLowerCase(), GameType.SURVIVAL);
+        }
+
+        CommonPlayerSpawnInfo spawnInfo = buildCommonSpawnInfo(to, world, gameType);
+        if (spawnInfo == null) {
+            return;
+        }
+
+        out.add(ReplayAction.gamePacket(encode(
+                new ClientboundRespawnPacket(spawnInfo, ClientboundRespawnPacket.KEEP_ALL_DATA))));
+
+        cameraDimension = to;
+        // Flashback clears/recreates the level — force re-emit of chunks/entities in the new dim.
+        knownChunkKeys.clear();
+        lastPoses.clear();
+        knownEntities.clear();
+        knownPlayers.clear();
+        knownPlayers.add(change.entityUuid());
+        lastBorders.clear();
+        clearMountTracking();
+        clearVitalsTracking();
+        lastHotbarPlayer = null;
+        lastHotbarSelected = Integer.MIN_VALUE;
+        lastHotbarItems = List.of();
+
+        if (world != null) {
+            lastWorlds.put(to, world);
+            // Re-seed border for the new dimension (InitializeBorder after Respawn).
+            lastBorders.put(to, BorderGeometry.of(world));
+            out.add(ReplayAction.gamePacket(encode(
+                    new ClientboundInitializeBorderPacket(borderFromState(world)))));
+        }
+    }
+
+    private WorldState findWorldState(DimensionId dim, List<StateChange> batch) {
+        for (StateChange change : batch) {
+            if (change instanceof StateChange.WorldUpsert(WorldState world)
+                    && dim.equals(world.dimension())) {
+                return world;
+            }
+        }
+        return lastWorlds.get(dim);
+    }
+
+    private static PlayerState findCameraPlayerInBatch(UUID cameraUuid, List<StateChange> batch) {
+        for (StateChange change : batch) {
+            if (change instanceof StateChange.PlayerUpsert(PlayerState player)
+                    && player.uuid().equals(cameraUuid)) {
+                return player;
+            }
+        }
+        return null;
+    }
+
+    private CommonPlayerSpawnInfo buildCommonSpawnInfo(
+            DimensionId dimId,
+            WorldState world,
+            GameType gameType
+    ) {
+        if (activeRegistries == null) {
+            return null;
+        }
+        Identifier id;
+        try {
+            id = Identifier.parse(dimId.namespacedKey());
+        } catch (RuntimeException e) {
+            return null;
+        }
+        ResourceKey<Level> levelKey = ResourceKey.create(Registries.DIMENSION, id);
+        ResourceKey<LevelStem> stemKey = ResourceKey.create(Registries.LEVEL_STEM, id);
+        Registry<LevelStem> stems = activeRegistries.lookupOrThrow(Registries.LEVEL_STEM);
+        LevelStem stem = stems.getValue(stemKey);
+        if (stem == null) {
+            stem = stems.getValue(id);
+        }
+        if (stem == null) {
+            return null;
+        }
+        Holder<DimensionType> typeHolder = stem.type();
+        int seaLevel = world != null ? world.seaLevel() : 63;
+        return new CommonPlayerSpawnInfo(
+                typeHolder,
+                levelKey,
+                0L,
+                gameType,
+                gameType,
+                false,
+                false,
+                Optional.empty(),
+                0,
+                seaLevel
+        );
     }
 
     private static MoveEntitiesCodec.Pose poseOf(PlayerState player) {
@@ -689,6 +918,10 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
     }
 
     private void encodeWorldUpsert(WorldState world, List<ReplayAction> out) {
+        if (cameraDimension != null && !cameraDimension.equals(world.dimension())) {
+            lastBorders.put(world.dimension(), BorderGeometry.of(world));
+            return;
+        }
         BorderGeometry next = BorderGeometry.of(world);
         BorderGeometry previous = lastBorders.put(world.dimension(), next);
         if (previous != null && previous.equals(next)) {
@@ -743,6 +976,9 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
     private List<ReplayAction> encodeChunks(GlobalSnapshot snapshot) {
         List<ReplayAction> actions = new ArrayList<>();
         for (ChunkState chunk : snapshot.chunks().values()) {
+            if (cameraDimension != null && !cameraDimension.equals(chunk.dimension())) {
+                continue;
+            }
             knownChunkKeys.add(chunkStreamKey(chunk));
             appendPayload(actions, chunk.blockAndLightPayload());
         }
@@ -761,6 +997,9 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
         for (EntityState entity : snapshot.entities().values()) {
             if (entity.uuid().equals(cameraUuid)) {
                 knownEntities.add(entity.entityId());
+                continue;
+            }
+            if (cameraDimension != null && !cameraDimension.equals(entity.dimension())) {
                 continue;
             }
             knownEntities.add(entity.entityId());
@@ -792,6 +1031,47 @@ public final class StateActionEncoder26_2 implements StateActionEncoder {
         appendPayload(actions, entity.metadata());
         actions.addAll(encodeEquipment(entity.entityId(), entity.equipment()));
         return actions;
+    }
+
+    private void clearVitalsTracking() {
+        lastEmittedHealth.clear();
+        lastEmittedFood.clear();
+        lastEmittedSaturation.clear();
+    }
+
+    private void seedVitalsTracking(GlobalSnapshot snapshot) {
+        for (PlayerState player : snapshot.players().values()) {
+            rememberVitals(player);
+        }
+    }
+
+    private void rememberVitals(PlayerState player) {
+        lastEmittedHealth.put(player.uuid(), player.health());
+        lastEmittedFood.put(player.uuid(), player.foodLevel());
+        lastEmittedSaturation.put(player.uuid(), player.saturation());
+    }
+
+    /**
+     * Flashback {@code handleSetHealth} only applies to the replay local player (ego). Without this,
+     * entity metadata alone can leave the ego HUD / death pose at 0 HP after respawn.
+     */
+    private List<ReplayAction> encodeCameraHealthIfChanged(PlayerState player) {
+        Float prevH = lastEmittedHealth.get(player.uuid());
+        Integer prevF = lastEmittedFood.get(player.uuid());
+        Float prevS = lastEmittedSaturation.get(player.uuid());
+        if (prevH != null
+                && Float.compare(prevH, player.health()) == 0
+                && prevF != null
+                && prevF == player.foodLevel()
+                && prevS != null
+                && Float.compare(prevS, player.saturation()) == 0) {
+            return List.of();
+        }
+        return List.of(ReplayAction.gamePacket(encode(new ClientboundSetHealthPacket(
+                player.health(),
+                player.foodLevel(),
+                player.saturation()
+        ))));
     }
 
     /**

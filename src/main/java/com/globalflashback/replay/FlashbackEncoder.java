@@ -1,11 +1,15 @@
 package com.globalflashback.replay;
 
 import com.globalflashback.delta.DeltaFrame;
+import com.globalflashback.event.GameplayEventJson;
+import com.globalflashback.event.GfrEventsFormat;
 import com.globalflashback.format.ChunkMeta;
 import com.globalflashback.format.ChunkWriter;
 import com.globalflashback.format.FlashbackContainer;
 import com.globalflashback.format.FlashbackMeta;
 import com.globalflashback.format.ReplayAction;
+import com.globalflashback.motion.format.ClientPoseStore;
+import com.globalflashback.motion.format.GfrMotionFormat;
 import com.globalflashback.nms.StateActionEncoder;
 import com.globalflashback.state.GlobalSnapshot;
 
@@ -37,6 +41,15 @@ public final class FlashbackEncoder {
             ReplayDocument document,
             StateActionEncoder.Session session,
             Path outputFile
+    ) throws IOException {
+        return encode(document, session, outputFile, null);
+    }
+
+    public Path encode(
+            ReplayDocument document,
+            StateActionEncoder.Session session,
+            Path outputFile,
+            ClientPoseStore.WrittenMotion clientPose
     ) throws IOException {
         Objects.requireNonNull(document, "document");
         Objects.requireNonNull(session, "session");
@@ -74,6 +87,18 @@ public final class FlashbackEncoder {
             if (flashMeta.chunks.isEmpty()) {
                 writer.writeChunk("c0.flashback", ChunkWriter.write(initialSnapshotActions, List.of()));
                 flashMeta.chunks.put("c0.flashback", new ChunkMeta(0, true));
+            }
+
+            if (clientPose != null) {
+                writer.writeEntry(GfrMotionFormat.ZIP_META, clientPose.metaJson());
+                writer.writeEntry(GfrMotionFormat.ZIP_BIN, clientPose.bin());
+            }
+
+            if (!document.events().isEmpty()) {
+                // ZIP ticks must match Flashback/motion (recording-relative 0..totalTicks).
+                writer.writeEntry(
+                        GfrEventsFormat.ZIP_ENTRY,
+                        GameplayEventJson.toBytes(document.events(), startTick));
             }
 
             writer.writeMetadata(flashMeta);

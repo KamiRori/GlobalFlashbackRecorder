@@ -1,7 +1,10 @@
 package com.globalflashback.event;
 
 /**
- * High-level gameplay event kinds for Event Timeline (Phase 7 will expand usage).
+ * High-level gameplay event kinds for Event Timeline ({@code gfr/events.json}).
+ *
+ * <p>There is intentionally <b>no</b> {@code ITEM_TRANSFER}: gift/share cannot be proven
+ * server-side. Record {@link #ITEM_DROP}/{@link #ITEM_PICKUP} only; Director may infer.
  */
 public enum GameplayEventType {
     PLAYER_JOIN,

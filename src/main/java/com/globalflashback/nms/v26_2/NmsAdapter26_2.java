@@ -152,6 +152,8 @@ public final class NmsAdapter26_2 implements NmsAdapter {
                 || Float.compare(previous.experienceProgress(), experienceProgress) != 0
                 || previous.experienceLevel() != experienceLevel
                 || previous.totalExperience() != totalExperience;
+        boolean healthChanged = previous == null
+                || Float.compare(previous.health(), health) != 0;
         boolean heavyNeeded = captureHeavy
                 || appearanceChanged
                 || mountChanged
@@ -203,8 +205,10 @@ public final class NmsAdapter26_2 implements NmsAdapter {
         boolean refreshPotions = captureHeavy || previous == null;
         // Appearance (incl. returning to default pose/flags) needs a full packAll; periodic heavy can
         // use non-default only. Never packDirty — would steal vanilla client dirty bits.
-        boolean refreshMetadata = previous == null || appearanceChanged || captureHeavy;
-        boolean metadataPackAll = previous == null || appearanceChanged;
+        // Health lives in LivingEntity synched data: vitals-only changes must refresh metadata or
+        // replay keeps the previous SetEntityData (e.g. health=0 → stuck death animation after respawn).
+        boolean refreshMetadata = previous == null || appearanceChanged || captureHeavy || healthChanged;
+        boolean metadataPackAll = previous == null || appearanceChanged || healthChanged;
         boolean refreshProfile = captureHeavy || previous == null || !previous.profileName().equals(profileName);
 
         List<PlayerState.PotionEffectState> effects;

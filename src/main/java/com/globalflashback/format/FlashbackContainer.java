@@ -42,6 +42,11 @@ public final class FlashbackContainer {
             putEntry(name, data);
         }
 
+        /** Optional extra archive entries (e.g. {@code gfr/motion.bin}). */
+        public void writeEntry(String name, byte[] data) throws IOException {
+            putEntry(name, data);
+        }
+
         private void putEntry(String name, byte[] data) throws IOException {
             zip.putNextEntry(new ZipEntry(name));
             zip.write(data);
